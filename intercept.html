@@ -55,7 +55,14 @@
     font-size:10px;font-weight:700;flex:none;border:1px solid rgba(255,255,255,.25)}
   .mag{font-variant-numeric:tabular-nums}
   .step{display:flex;align-items:center;gap:6px}
-  .step button{padding:2px 9px;line-height:1}
+  /* These carry the highest-frequency controls in the game — fire allocation, procurement,
+     magazine loading. They were 17px tall, which is a mis-tap every few clicks. */
+  .step button{padding:5px 10px;line-height:1.15;min-width:30px;text-align:center;
+    touch-action:manipulation}
+  @media(pointer:coarse){
+    button{min-height:44px}
+    .step button{min-height:40px;min-width:40px}
+  }
   /* Event log: sits at the foot of the right pane. Drag its header to resize,
      A−/A＋ to change the text size (both persist). */
   #logHdr{display:flex;align-items:center;gap:7px;padding:4px 10px;flex:none;
@@ -275,15 +282,15 @@ function genTerrain(){
   // decide the raid axes first — the homeland is then placed away from them
   const useNorth=Math.random()<0.5, useSouth=Math.random()<0.5;
   G.spawnEdges=['east'].concat(useNorth?['north']:[]).concat(useSouth?['south']:[]);
-  const HB=computeHomeland(); G.homeland=HB;
+  const HB=computeHomeland();
   const cx=(HB.c0+HB.c1)/2, cy=(HB.r0+HB.r1)/2;
   const rx=HB.w/2, ry=HB.h/2;
-  let T, H, landCount=0, tries=0;
+  let T, landCount=0, tries=0;
   do{
     tries++;
     const n1=valueNoise(5), n2=valueNoise(2.5), n3=valueNoise(1.3);
-    T=[]; H=[];
-    for(let c=0;c<COLS;c++){ T[c]=[]; H[c]=[];
+    T=[];
+    for(let c=0;c<COLS;c++){ T[c]=[];
       for(let r=0;r<ROWS;r++){
         const h = n1(c,r)*0.55 + n2(c,r)*0.30 + n3(c,r)*0.15;   // organic 0..1
         // elliptical falloff from the homeland centre, roughened by noise → an island
@@ -291,12 +298,12 @@ function genTerrain(){
         const d=Math.sqrt(nx*nx+ny*ny);
         let land = d < (0.94 + (h-0.5)*0.85);
         if(c>=COLS-2||c<=0||r<=0||r>=ROWS-1) land=false;        // keep a clean sea border
-        T[c][r]=land; H[c][r]=h;
+        T[c][r]=land;                    // h is the falloff roughener only; it is not kept
       }
     }
     landCount=0; for(let c=0;c<COLS;c++)for(let r=0;r<ROWS;r++) if(T[c][r]) landCount++;
   } while(landCount<110 && tries<14);
-  G.terrain=T; G.height=H;
+  G.terrain=T;
   // ocean = sea connected to any border; fill enclosed interior "lakes" back to land
   const seeds=[];
   for(let c=0;c<COLS;c++){ if(!T[c][0])seeds.push({col:c,row:0}); if(!T[c][ROWS-1])seeds.push({col:c,row:ROWS-1}); }
@@ -340,7 +347,6 @@ function recomputeTerrainDerived(){
   G.distToLand = seaHexes.length? bfsDist(landHexes) : null;
   G.distToSea  = landHexes.length? bfsDist(seaHexes) : null;
   precomputeFills();
-  G.seaSides = {east:edgeHasSea('east'), north:edgeHasSea('north'), south:edgeHasSea('south')};
 }
 // edge helpers — any board edge, used for spawn corridors (sea OR dry land border)
 function edgeCells(side){
@@ -360,7 +366,7 @@ function loadScenarioTerrain(scn){
   const T=[]; for(let c=0;c<COLS;c++){ T[c]=[]; for(let r=0;r<ROWS;r++) T[c][r]=false; }
   for(let r=0;r<Math.min(ROWS,scn.terrain.length);r++){ const line=scn.terrain[r]||'';
     for(let c=0;c<Math.min(COLS,line.length);c++) T[c][r] = (line[c]==='#'); }
-  G.terrain=T; G.height=null;
+  G.terrain=T;
   recomputeTerrainDerived();
 }
 /* A scenario's target list is authoritative: it may hold ANY number of sites in any mix.
@@ -630,9 +636,10 @@ function newGame(scn){
     units:[], aircraft:[],
     threats:[],              // active cruise/drone/ballistic
     targets:[],
-    terrain:null, height:null, hexFill:null, spawnEdges:['east'],
+    terrain:null, hexFill:null, spawnEdges:['east'],
     noDeploy:null, spawnZone:null,
     layers:(G&&G.layers)||{radar:true,cruise:false,abm:false},  // coverage overlays (persist)
+    seadDoctrine:(G&&G.seadDoctrine)||DEFAULT_DOCTRINE,         // enemy SEAD doctrine (persists)
     anim:null, animTimer:null, popup:null,
     // campaign tally, used for the after-action report
     stats:{cruiseSpawned:0, cruiseLeaked:0, cruiseKilled:0,
@@ -643,8 +650,6 @@ function newGame(scn){
     alloc:[],                // engagement allocations this turn
     selUnit:null, selThreat:null, setupUnit:null,
     log:[],
-    deconflict:false,
-    pendingWave:null,
   };
   G.scenarioForces=null; G.scenarioAcBases=null; G.scenarioForceSpec=null;
   if(scenario && scenario.terrain){
@@ -661,7 +666,7 @@ function newGame(scn){
     if(scenario.waveSizes) G.waveSizes=scenario.waveSizes;
     logMsg('info','Scenario: '+scenario.name);   // briefing lives in the panel, not the log
   } else {
-    genTerrain();                    // procedural island — also sets G.spawnEdges & G.homeland
+    genTerrain();                    // procedural island — also sets G.spawnEdges
     placeTargets();
     logMsg('info','Setup: load magazines & position forces, then Start.');
   }
@@ -901,7 +906,6 @@ function organicContact(t){
 }
 function isDetected(t){ return isTracked(t) || organicContact(t); }
 function visibleThreats(){ return G.threats.filter(isDetected); }
-function radarCovers(c,r){ return sensors().some(x=>dist({col:x.col,row:x.row},{col:c,row:r})<=x.detect); }
 // whole-board coverage mask, computed once per render (cheaper than per-hex queries)
 // generic union mask: sources are {col,row,r}
 function coverageGridFor(sources){
@@ -915,7 +919,6 @@ function coverageGridFor(sources){
   }
   return g;
 }
-function coverageGrid(){ return coverageGridFor(sensors().map(s=>({col:s.col,row:s.row,r:s.detect}))); }
 // the three displayable envelopes
 const COVERAGE_LAYERS={
   radar:{label:'Radar', colour:'#e3b341',
@@ -1166,6 +1169,27 @@ function makeThreat(type,col,row,targetId){
    the campaign usually ends first — so this band is the real tuning lever. */
 let DRIP_BAND=2;                  // 2 in 20 = 10% per turn
 let BALLISTIC_CAP=6;
+
+/* ---------- SEAD doctrine ----------
+   The same ballistic, aimed by two different minds. Counter-battery spends the missile on
+   whatever can shoot back, heaviest first, and leaves the radars alone — the enemy is buying
+   dead launchers. Counter-sensor spends it on your eyes instead, because a network that
+   cannot see reduces every surviving battery to the 1-hex organic bubble (see ORGANIC_RANGE)
+   without destroying a single one of them. Both are real doctrines and both are playable;
+   which you face is a setting, not a fact about the game.
+   The counter-play is identical either way and already in the model: a ballistic strikes the
+   COORDINATES it was aimed at, so a unit that relocates during the lull is simply not there
+   when it lands. That is what makes lull relocation a decision rather than flavour.         */
+const SEAD_DOCTRINE={
+  battery:{name:'Counter-battery', pr:{ABM:3,SAM:2,SHORAD:1},
+    blurb:'Hunts your launchers, heaviest first (ABM → SAM → SHORAD). Radars are spared.'},
+  sensor: {name:'Counter-sensor',  pr:{RADAR:4,ABM:3,SAM:2,SHORAD:1},
+    blurb:'Hunts your radars first, then the launchers. Blinding the network is cheaper than killing it.'},
+};
+const DEFAULT_DOCTRINE='battery';
+const doctrineId=()=>(G&&G.seadDoctrine&&SEAD_DOCTRINE[G.seadDoctrine])?G.seadDoctrine:DEFAULT_DOCTRINE;
+const doctrine=()=>SEAD_DOCTRINE[doctrineId()];
+const seadPriority=()=>doctrine().pr;
 function ballisticDrip(){
   if(G.ballisticLaunched>=BALLISTIC_CAP) return;
   const r=d20();
@@ -1183,10 +1207,17 @@ function ballisticDrip(){
       const abs=aliveTargets().filter(t=>t.airbase);
       const t=abs[Math.floor(Math.random()*abs.length)]||aliveTargets()[0];
       if(t){tcol=t.col;trow=t.row;desc='airbase ('+t.name+')';}
-    } else { // SEAD: kill the shooters — ABM first, then SAM, then SHORAD. Radars are spared.
-      const pr={ABM:3,SAM:2,SHORAD:1};
-      const b=G.units.filter(u=>!u.dead&&pr[u.type]).sort((a,b)=>pr[b.type]-pr[a.type])[0];
-      if(b){tcol=b.col;trow=b.row;desc='battery SEAD ('+b.name+' position)';}
+    } else { // SEAD — which shooters (or eyes) get hunted depends on the enemy's doctrine
+      const pr=seadPriority();
+      const tier=G.units.filter(u=>!u.dead&&pr[u.type]);
+      // Pick randomly WITHIN the top priority tier. Taking [0] off a stable sort meant the
+      // enemy re-attacked the same first-constructed battery every campaign — learnable in
+      // two games, and it made the whole SEAD threat trivially avoidable.
+      const top=tier.length?Math.max(...tier.map(u=>pr[u.type])):0;
+      const cand=tier.filter(u=>pr[u.type]===top);
+      const b=cand[Math.floor(Math.random()*cand.length)];
+      if(b){tcol=b.col;trow=b.row;
+        desc=(b.sensor?'radar SEAD (':'battery SEAD (')+b.name+' position)';}
     }
     if(tcol==null){ // nothing to hit (all targets/batteries gone) — aim at any target
       const t=aliveTargets()[0]; if(t){tcol=t.col;trow=t.row;desc=t.name;}
@@ -1685,7 +1716,7 @@ function endGame(){
   setPhase('over');
   logMsg('big',`GAME OVER — enemy VP ${G.enemyVP}/${ceilingNow()} → ${bandName()}`);
   render();
-  if(typeof openAAR==='function' && !G.suppressAAR) openAAR();
+  if(typeof openAAR==='function') openAAR();
 }
 
 /* ================= UI HELPERS ================= */
@@ -1699,7 +1730,12 @@ function el(tag,attrs,txt){ const e=document.createElementNS(SVGNS,tag);
   for(const k in attrs)e.setAttribute(k,attrs[k]); if(txt!=null)e.textContent=txt; return e; }
 
 function render(){
-  renderBoard(); renderSide(); renderPopup();
+  renderBoard();
+  // Mid-animation only the board moves: the panels read t.col/t.row, which are already at
+  // their final values (the animation is threatDisplayPos walking t.path). Rebuilding the
+  // toolbar, contact list, roster and log four times a second is pure churn.
+  if(G&&G.anim) return;
+  renderSide(); renderPopup();
 }
 
 /* ================= FLOATING POPUP =================
@@ -1852,9 +1888,8 @@ function renderBoard(){
     const {x,y}=hexCenter(c,r);
     const fill = (G.hexFill&&G.hexFill[c]) ? G.hexFill[c][r] : (isLand(c,r)?'#22391e':'#12435c');
     const poly=el('polygon',{points:hexPoints(x,y),fill,
-      stroke:'#0b0f14','stroke-width':0.7});
+      stroke:'#0b0f14','stroke-width':0.7,'data-c':c,'data-r':r});
     poly.style.cursor='pointer';
-    poly.addEventListener('click',()=>onHexClick(c,r));
     svg.appendChild(poly);
   }
   // coordinate labels on edges
@@ -2091,6 +2126,18 @@ function renderBoard(){
   }
 }
 // clicking a stack cycles through the contacts sharing that hex
+/* One delegated listener instead of 900 fresh closures per render. The token groups (units,
+   targets, flights, contact stacks) stopPropagation() on their own click, and every overlay
+   drawn above the hexes carries pointer-events:none — so an event that reaches the SVG root
+   is by definition a click on bare terrain. The layering falls out for free. */
+(function wireBoard(){
+  const svg=document.getElementById('board'); if(!svg) return;
+  svg.addEventListener('click',e=>{
+    const p=e.target.closest&&e.target.closest('[data-c]'); if(!p) return;
+    onHexClick(+p.getAttribute('data-c'), +p.getAttribute('data-r'));
+  });
+})();
+
 function onStackClick(list,ev){
   if(G.anim) return;
   if(G.phase==='engage' && G.selUnit!=null){ onThreatClick(list[0],ev); return; }
@@ -2347,7 +2394,8 @@ function procurementPanel(){
   const LABEL={ABM:'ABM battery',SAM:'SAM battery',SHORAD:'SHORAD',RADAR:'Radar (EWR)',
                DDG:'Destroyer',F5:'5th-gen sqn',F4:'4th-gen sqn'};
   const NOTE={ABM:'r4 · only ABM stops ballistics',SAM:'r3 · the workhorse',SHORAD:'r1 · point defence',
-              RADAR:'detect 10 · unarmed eyes',DDG:'r4 · 12 rds included · detect 6',
+              RADAR:'detect 10 · unarmed eyes'+(doctrineId()==='sensor'?' · SEAD hunts these first':''),
+              DDG:'r4 · 12 rds included · detect 6',
               F5:'sensor · cue +3 · detect 7',F4:'shooter · 6 weapons · 4 sorties'};
   let h=`<p class="stitle" style="margin-top:12px">Procurement</p>
    <div class="row"><span class="k">Budget</span><span><select id="budgetPick">`+
@@ -2393,6 +2441,13 @@ function setupPanel(){
         a shorter war is supplied for a shorter war, so the rounds-per-threat pressure is unchanged.
         A shortened run also faces the <i>later</i>, heavier waves.</div>`;
   if(maxWaves()<2) h+=`<div class="hint">One wave means no lull — reloading and relocation will not come up.</div>`;
+  h+=`<div class="row" style="margin-top:7px"><span class="k">Enemy SEAD doctrine</span>
+      <span><select id="seadPick">`+
+      Object.keys(SEAD_DOCTRINE)
+        .map(k=>`<option value="${k}" ${k===doctrineId()?'selected':''}>${SEAD_DOCTRINE[k].name}</option>`).join('')+
+      `</select></span></div>`;
+  h+=`<div class="hint">${doctrine().blurb} A ballistic strikes the <b class="hl">coordinates</b>
+      it was aimed at, so relocating the unit during a lull is the counter either way.</div>`;
   h+=`<div class="step" style="margin-top:6px"><button id="scnReroll">↻ Reroll / reload</button>
       <button id="scnEdit">✎ Edit map</button></div>`;
   h+=procurementPanel();
@@ -2419,6 +2474,8 @@ function wireSetup(){
   if(bp) bp.onchange=()=>{ G.budget=+bp.value; render(); };
   const wp=document.getElementById('wavePick');
   if(wp) wp.onchange=()=>{ G.maxWaves=+wp.value; rescaleAmmo(); render(); };
+  const sd=document.getElementById('seadPick');
+  if(sd) sd.onchange=()=>{ G.seadDoctrine=sd.value; render(); };
   document.querySelectorAll('[data-buy]').forEach(b=>{ b.onclick=()=>{
     if(b.dataset.buy==='+') buyUnit(b.dataset.t); else sellUnit(b.dataset.t); };});
   document.querySelectorAll('[data-am]').forEach(b=>{ b.onclick=()=>{
@@ -2552,15 +2609,14 @@ function engageTags(t){
   return tags;
 }
 
-// d20 firing solution for a shooter vs a threat (teaches the combat odds live)
-function hitInfo(u,t){ return shotProfile(u,t); }
-/* The fire-assignment box. Lives in a floating popup so it sits next to the contact you
-   clicked instead of pushing the side panel around. */
+/* The fire-assignment box — the live d20 firing solution, which is how the combat odds get
+   taught. Lives in a floating popup so it sits next to the contact you clicked instead of
+   pushing the side panel around. */
 function assignmentHTML(t){
   let h='';
   {
     {
-      const elig=shooters().filter(u=>u.col!=null&&canEngage(u,t)).map(u=>({u,info:hitInfo(u,t)}))
+      const elig=shooters().filter(u=>u.col!=null&&canEngage(u,t)).map(u=>({u,info:shotProfile(u,t)}))
                  .filter(x=>x.info).sort((a,b)=>a.info.need-b.info.need);
       const hd=headingOf(t);
       h+=`<div class="fsol"><span class="k">@ ${t.type==='ballistic'?colLabel(t.tcol)+(t.trow+1):colLabel(t.col)+(t.row+1)}${hd?' · tracking '+hd:''}</span>`;
@@ -2574,7 +2630,7 @@ function assignmentHTML(t){
             mates.map((m,i)=>{
               const r=G.alloc.filter(a=>a.tid===m.tid).reduce((s,a)=>s+a.rounds,0);
               const on=m.tid===t.tid;
-              return `<button data-pick="${m.tid}" class="${on?'primary':''}" style="padding:2px 7px"
+              return `<button data-pick="${m.tid}" class="${on?'primary':''}"
                        title="${r} round${r===1?'':'s'} assigned">${i+1}${r?'·'+r:''}</button>`;
             }).join('')+`</span></div>`;
         }
@@ -2812,9 +2868,12 @@ function helpHTML(){
   and a destroyer steaming out as a <b>radar picket</b> is often worth more than its magazine.</p>
   <p>Radars relocate like batteries: <b>only during a lull, 1 hex</b>, as that unit's one action. Push them forward for
   depth of warning and they are exposed; hold them back and missiles cross your map unseen.</p>
-  <p><b style="color:var(--bad)">The enemy knows this.</b> Ballistic SEAD now hunts <b class="hl">radars first</b>, ahead of
-  ABM, SAM and SHORAD. Lose both and your whole defence collapses to a ring of 1-hex self-defence bubbles —
-  so relocating a radar between waves is often worth more than another magazine.</p>
+  <p><b style="color:var(--bad)">The enemy may know this.</b> Under <b class="hl">counter-sensor</b> doctrine, ballistic
+  SEAD hunts <b class="hl">radars first</b>, ahead of ABM, SAM and SHORAD — lose your radar picture and the whole defence
+  collapses to a ring of 1-hex self-defence bubbles without a single launcher being destroyed. Under
+  <b class="hl">counter-battery</b> doctrine the radars are spared and the launchers are hunted instead. You choose which
+  enemy you face at setup. Either way, relocating the threatened unit between waves is often worth more than another
+  magazine. <span class="muted">This campaign: <b class="hl">${doctrine().name}</b>.</span></p>
 
   <h3>Reading the raid (what you can actually see)</h3>
   <p>Your radar shows <b class="hl">where a missile is and where it is heading</b> — not what it is aimed at. Each track
@@ -2860,9 +2919,18 @@ function helpHTML(){
     destroyer on 14+</b> — so a warship on the right station is a real, if thin, ballistic defence. No coverage in
     reach = it hits. This is a placement puzzle: you cannot cover everything.</li>
   </ul>
-  <p>Two-thirds of ballistic fire hunts your <b class="hl">airbases and interceptor batteries</b> — a hit destroys a
-  battery outright, and it goes after the heaviest first (ABM, then SAM, then SHORAD). Radars are not targeted: the
-  enemy is spending these on your shooters, not your eyes. Protect the units that protect everything else.</p>
+  <p>Two-thirds of ballistic fire hunts your <b class="hl">airbases and defences</b> — a hit destroys the unit outright.
+  What it goes after depends on the doctrine you selected at setup:</p>
+  <ul>
+    <li><b class="hl">Counter-battery</b> — launchers only, heaviest first: ABM, then SAM, then SHORAD.
+      Radars are spared; the enemy is spending these on your shooters, not your eyes.</li>
+    <li><b class="hl">Counter-sensor</b> — <b class="hl">radars first</b>, then the launchers. Cheaper: a blinded
+      battery is cut to a one-hex self-defence bubble without being destroyed at all.</li>
+  </ul>
+  <p>Within whichever tier is top, the aim point is picked <b class="hl">at random</b> — you cannot predict which of your
+  radars or ABM batteries draws the missile. But it is aimed at <b class="hl">coordinates</b>, not at the unit: anything
+  that relocated during the lull is simply not there when it lands. That is the counter, and it is the same under both
+  doctrines. <span class="muted">This campaign: <b class="hl">${doctrine().name}</b>.</span></p>
 
   <h3>The lull (between waves)</h3>
   <p>Breathing room — but it can end without warning. Each unit gets <b class="hl">one action</b> per lull turn:</p>
@@ -3045,7 +3113,6 @@ function aarHTML(){
   const vpRows=[['Cities struck',S.vp.cities],['Ballistic strikes',S.vp.ballistic],
     ['Military damage',S.vp.milDamage],['Installations written off',S.vp.writeOff],
     ['Squadrons lost',S.vp.squadrons]].filter(r=>r[1]>0).sort((a,b)=>b[1]-a[1]);
-  const alive=n=>n; // readability
   return `<div class="brief">
     <div style="display:flex;align-items:baseline;justify-content:space-between;margin:2px 0 4px">
       <span style="font-size:26px;font-weight:700;color:${bandColour()}">${bandName()}</span>
@@ -3055,6 +3122,7 @@ function aarHTML(){
       `<span style="color:${bandColour(c)};border-color:${bandColour(c)};${n===bandName()?'font-weight:700':'opacity:.5'}">${n} ≤ ${c}</span>`).join('')}
       <span style="color:var(--bad);border-color:var(--bad);${bandName()==='Defeat'?'font-weight:700':'opacity:.5'}">Defeat &gt; ${bandBar()[bandBar().length-1][1]}</span></div>
     ${maxWaves()!==WAVES_DEFAULT?`<div class="hint">Thresholds scaled to a ${maxWaves()}-wave campaign.</div>`:''}
+    <div class="hint">Fought under <b class="hl">${doctrine().name}</b> SEAD doctrine.</div>
 
     <h4>Assessment</h4>
     ${evaluationHTML()}
