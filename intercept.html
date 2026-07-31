@@ -387,8 +387,12 @@ function placeScenarioTargets(scn){
 function buildScenarioObject(id,name){
   const terrain=[]; for(let r=0;r<ROWS;r++){ let line=''; for(let c=0;c<COLS;c++) line+=G.terrain[c][r]?'#':'.'; terrain.push(line); }
   const targets=G.targets.map(t=>({id:t.id,type:t.type||t.id,name:t.name,col:t.col,row:t.row}));
+  // noDeploy and spawnZone are both read back by newGame, so omitting them silently dropped
+  // a map's neutral territory and its launch corridor — an edited UK played nothing like it
   return {id:id||'custom', name:name||'Custom map', briefing:'Custom map.',
-    spawnEdges:(G.spawnEdges||['east']).slice(), terrain, targets};
+    spawnEdges:(G.spawnEdges||['east']).slice(), terrain, targets,
+    noDeploy: G.noDeploy?G.noDeploy.slice():null,
+    spawnZone: G.spawnZone?G.spawnZone.slice():null};
 }
 
 // greedy step from -> toward, avoiding going off board; returns next hex
@@ -2414,12 +2418,52 @@ function editorApply(c,r){
   render();
 }
 function playEdited(){ if(!editorReady())return; newGame(buildScenarioObject('custom','Edited map')); render(); }
+/* ---------- saved maps ----------
+   buildScenarioObject already emits exactly the shape newGame() accepts, so persisting a map
+   is storage plus a list entry. Ids are namespaced 'map:…' because scenario lookup is a
+   .find by id and returns the FIRST match — an unprefixed save called "uk" would shadow the
+   built-in one for the rest of the session. Saving the same name twice replaces in place
+   rather than stacking duplicates. */
+const MAPS_KEY='intercept_maps';
+function readMaps(){ try{ const a=JSON.parse(localStorage.getItem(MAPS_KEY)||'[]');
+  return Array.isArray(a)?a:[]; }catch(_){ return []; } }
+function writeMaps(a){ try{ localStorage.setItem(MAPS_KEY,JSON.stringify(a)); return true; }
+  catch(_){ flash('Could not save — browser storage is full or blocked.'); return false; } }
+function loadSavedMaps(){
+  for(const m of readMaps()) if(m&&m.id&&!SCENARIOS.some(s=>s.id===m.id)){ m.saved=true; SCENARIOS.push(m); }
+}
+function mapId(name){ return 'map:'+name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,24); }
+function saveCurrentMap(){
+  if(!editorReady()) return;                         // reuse the editor's own validity check
+  const name=(prompt('Name this map:', 'My map')||'').trim();
+  if(!name) return;
+  const id=mapId(name); if(id==='map:') { flash('That name has no usable characters.'); return; }
+  const o=buildScenarioObject(id,name); o.saved=true;
+  o.briefing='A custom map: '+name+'.';
+  const maps=readMaps(), i=maps.findIndex(m=>m.id===id);
+  if(i>=0) maps[i]=o; else maps.push(o);
+  if(!writeMaps(maps)) return;
+  const j=SCENARIOS.findIndex(s=>s.id===id);
+  if(j>=0) SCENARIOS[j]=o; else SCENARIOS.push(o);
+  flash(`Saved "${name}" — it is now in the scenario list.`);
+}
+function deleteSavedMap(id){
+  const m=SCENARIOS.find(s=>s.id===id); if(!m||!m.saved) return;
+  if(!confirm(`Delete the saved map "${m.name}"?`)) return;
+  writeMaps(readMaps().filter(x=>x.id!==id));
+  const j=SCENARIOS.findIndex(s=>s.id===id); if(j>=0) SCENARIOS.splice(j,1);
+  newGame(DEFAULT_SCENARIO); render();
+}
 function exportScenario(){
   const o=buildScenarioObject('custom','My scenario');
   const terr=o.terrain.map(l=>'      '+JSON.stringify(l)).join(',\n');
-  const tg=o.targets.map(t=>`      {id:'${t.id}', name:${JSON.stringify(t.name)}, col:${t.col}, row:${t.row}}`).join(',\n');
+  // type: MUST be emitted — placeScenarioTargets falls back to TARGET_TYPES[o.id], which is
+  // undefined for a real id like 'LOS', so without it every target reimports as an airbase
+  const tg=o.targets.map(t=>`      {id:'${t.id}', type:'${t.type}', name:${JSON.stringify(t.name)}, col:${t.col}, row:${t.row}}`).join(',\n');
+  const extra=(o.noDeploy?`    noDeploy:${JSON.stringify(o.noDeploy)},\n`:'')
+            +(o.spawnZone?`    spawnZone:${JSON.stringify(o.spawnZone)},\n`:'');
   const text=`  {\n    id:'custom', name:'My scenario',\n    briefing:'Custom map.',\n`+
-    `    spawnEdges:${JSON.stringify(o.spawnEdges)},\n    terrain:[\n${terr}\n    ],\n    targets:[\n${tg}\n    ]\n  },`;
+    `    spawnEdges:${JSON.stringify(o.spawnEdges)},\n${extra}    terrain:[\n${terr}\n    ],\n    targets:[\n${tg}\n    ]\n  },`;
   document.getElementById('modalTitle').textContent='Export scenario';
   document.getElementById('modalBody').innerHTML=
     `<p class="muted">Copy this and paste it into the <b class="hl">SCENARIOS</b> array near the top of the file `+
@@ -2592,8 +2636,11 @@ function editorPanel(){
   h+=`</div><div class="hint">An edge can be sea (missiles emerge from water) or a dry land border.</div>
    <div class="step" style="flex-wrap:wrap;margin-top:12px">
      <button class="primary" id="edPlay">▶ Play this map</button>
-     <button id="edExport">⤓ Export scenario</button>
-     <button id="edExit">✕ Done</button></div>`;
+     <button id="edSave">💾 Save map</button>
+     <button id="edExport">⤓ Export source</button>
+     <button id="edExit">✕ Done</button></div>
+     <div class="hint">Saving keeps the map in this browser and adds it to the scenario list.
+     Export gives you the source to share or paste into the file permanently.</div>`;
   return h;
 }
 function wireEditor(){
@@ -2604,6 +2651,7 @@ function wireEditor(){
     const s=cb.dataset.edge; G.spawnEdges=(G.spawnEdges||[]).filter(x=>x!==s);
     if(cb.checked) G.spawnEdges.push(s); render();});
   document.getElementById('edPlay').onclick=playEdited;
+  document.getElementById('edSave').onclick=saveCurrentMap;
   document.getElementById('edExport').onclick=exportScenario;
   document.getElementById('edExit').onclick=exitEditor;
 }
@@ -2681,8 +2729,11 @@ function setupPanel(){
       `</select></span></div>`;
   h+=`<div class="hint">${doctrine().blurb} A ballistic strikes the <b class="hl">coordinates</b>
       it was aimed at, so relocating the unit during a lull is the counter either way.</div>`;
+  const curScn=SCENARIOS.find(s=>s.id===G.scenarioId);
   h+=`<div class="step" style="margin-top:6px"><button id="scnReroll">↻ Reroll / reload</button>
-      <button id="scnEdit">✎ Edit map</button></div>`;
+      <button id="scnEdit">✎ Edit map</button>`
+    +(curScn&&curScn.saved?`<button id="scnDel" class="warn">✕ Delete map</button>`:'')
+    +`</div>`;
   h+=procurementPanel();
   h+=`<p class="stitle" style="margin-top:12px">Magazine loading</p>
    <div class="hint">Distribute the reserve you bought into magazines. What is left funds lull reloads — it never refills.</div>`;
@@ -2703,6 +2754,7 @@ function wireSetup(){
   if(pick) pick.onchange=()=>{ newGame(pick.value); render(); openBriefing(); };
   const rr=document.getElementById('scnReroll'); if(rr) rr.onclick=()=>{ newGame(G.scenarioId); render(); };
   const ed=document.getElementById('scnEdit');  if(ed) ed.onclick=enterEditor;
+  const dl=document.getElementById('scnDel');   if(dl) dl.onclick=()=>deleteSavedMap(G.scenarioId);
   const bp=document.getElementById('budgetPick');
   if(bp) bp.onchange=()=>{ G.budget=+bp.value; render(); };
   const wp=document.getElementById('wavePick');
@@ -3598,6 +3650,7 @@ function offerResume(s){
 
 // ================= boot =================
 (function boot(){
+  loadSavedMaps();                    // must precede any scenario lookup, including a resume
   const s=readSave();                 // capture before newGame() builds the placeholder
   newGame();                          // so there is a board behind the prompt, not a blank
   render();
