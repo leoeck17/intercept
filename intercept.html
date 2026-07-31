@@ -1916,6 +1916,7 @@ function moveSel(hex){
 function setPhase(p){
   if(G.phase!==p){ G.selUnit=null; G.selThreat=null; G.setupUnit=null; G.popup=null; }
   G.phase=p;
+  saveGame();                       // phase boundaries checkpoint immediately, not debounced
 }
 function bandName(vp){
   const v=(vp==null)?G.enemyVP:vp;
@@ -1954,6 +1955,7 @@ function render(){
   // toolbar, contact list, roster and log four times a second is pure churn.
   if(G&&G.anim) return;
   renderSide(); renderPopup();
+  autosave();
 }
 
 /* ================= FLOATING POPUP =================
@@ -3506,8 +3508,102 @@ document.addEventListener('keydown',e=>{
   else closePopup();
 });
 
+/* ================= CAMPAIGN SAVE =================
+   Everything that IS the campaign goes to localStorage at each phase boundary; everything
+   merely derived from it does not. Three fields have to be handled rather than just copied:
+
+   • distToLand / distToSea — bfsDist fills unreachable cells with Infinity, and JSON turns
+     Infinity into null. Storing them would not crash, it would SILENTLY corrupt the terrain
+     shading and the deployment pools, which is far worse. They are rebuilt on load.
+   • terrain — a 30×30 array of booleans is 5.4KB of JSON; the editor's own ASCII rows are
+     930 bytes, and loadScenarioTerrain rehydrates them AND recomputes all three derived
+     fields on the way in. One existing helper solves the size and the Infinity problem at once.
+   • setupUnit — holds a live reference to a unit (see startMove). JSON round-trips it into a
+     duplicate that is no longer the object in G.units, so moving it after a restore would
+     mutate an orphan. Nulled here rather than left to setPhase, which only clears it when
+     the phase actually changes.
+
+   UID and TID are counters that live outside G but are genuinely part of the state: restore
+   without them and the next unit built collides with an existing one. The version tag lets a
+   later format change drop an old save politely instead of resuming half of it.          */
+const SAVE_KEY='intercept_save', SAVE_V=1;
+function saveGame(){
+  try{
+    // the editor mutates G.terrain in place; a half-painted map is not a campaign
+    if(!G||RESUME_PENDING||G.phase==='editor') return;
+    const g={...G};
+    delete g.hexFill; delete g.distToLand; delete g.distToSea;
+    g.anim=null; g.animTimer=null; g.setupUnit=null; g.popup=null;
+    g.log=G.log.slice(-200);
+    g.terrain=[]; for(let r=0;r<ROWS;r++){ let l='';
+      for(let c=0;c<COLS;c++) l+=G.terrain[c][r]?'#':'.'; g.terrain.push(l); }
+    localStorage.setItem(SAVE_KEY,JSON.stringify({v:SAVE_V,uid:UID,tid:TID,at:Date.now(),g}));
+  }catch(_){}
+}
+function readSave(){
+  try{ const s=JSON.parse(localStorage.getItem(SAVE_KEY)||'null');
+       if(s&&s.v!==SAVE_V){ clearSave(); return null; }        // older format — drop it
+       return (s&&s.g&&s.g.phase&&s.g.phase!=='over')?s:null;
+  }catch(_){ return null; }
+}
+function clearSave(){ try{ localStorage.removeItem(SAVE_KEY); }catch(_){} }
+function loadGame(s){
+  if(G&&G.animTimer) clearInterval(G.animTimer);
+  G=s.g;
+  UID=s.uid||0; TID=s.tid||0;               // restore counters BEFORE anything calls mkUnit
+  loadScenarioTerrain({terrain:G.terrain}); // rebuilds terrain + distance fields + hexFill
+  G.anim=null; G.animTimer=null; G.setupUnit=null; G.popup=null;
+  logMsg('info','Campaign resumed from save.');
+}
+/* Phase boundaries are the natural checkpoint, but they are not sufficient on their own:
+   procurement, fire allocation and movement all mutate without changing phase, and losing a
+   whole engagement's allocations to a refresh is maddening. So render() also schedules a
+   debounced write — skipped while an animation runs, which would otherwise queue one every
+   260ms, and debounced so a click-storm in procurement collapses to a single write. */
+let SAVE_T=null;
+/* While the resume prompt is up there is a fresh campaign sitting behind it, purely so the
+   board is not blank. Letting that autosave would overwrite the very save being offered —
+   close the tab at the prompt and the campaign would be gone. */
+let RESUME_PENDING=false;
+function autosave(){ if(!G||G.anim||RESUME_PENDING||G.phase==='editor') return;
+  clearTimeout(SAVE_T); SAVE_T=setTimeout(saveGame,800); }
+
+function offerResume(s){
+  const g=s.g, scn=SCENARIOS.find(x=>x.id===g.scenarioId);
+  const mins=Math.max(1,Math.round((Date.now()-(s.at||Date.now()))/60000));
+  const age = mins<60 ? `${mins} min ago` : `${Math.round(mins/60)} h ago`;
+  const dRow=DIFFICULTY.find(d=>d[0]===g.diff);
+  document.getElementById('modalTitle').textContent='Resume campaign';
+  document.getElementById('modalBody').innerHTML=`<div class="brief">
+    <p class="lead">A campaign is in progress. Pick up where you left off, or start over.</p>
+    <div class="fsol">
+      <div class="frow"><span class="k">Scenario</span><span>${(scn&&scn.name)||g.scenarioId}</span></div>
+      <div class="frow"><span class="k">Difficulty</span><span>${(dRow&&dRow[1])||'—'}</span></div>
+      <div class="frow"><span class="k">Progress</span><span>Wave ${g.waveNum}/${g.maxWaves} · turn ${g.turn}</span></div>
+      <div class="frow"><span class="k">Enemy VP</span><span>${g.enemyVP}</span></div>
+      <div class="frow"><span class="k">Saved</span><span>${age}</span></div>
+    </div>
+    <div class="step" style="margin-top:14px;justify-content:center">
+      <button id="rsGo" class="primary">▶ Resume</button>
+      <button id="rsNew" class="warn">↺ Discard &amp; start over</button>
+    </div></div>`;
+  document.getElementById('modal').classList.add('on');
+  document.getElementById('rsGo').onclick=()=>{
+    RESUME_PENDING=false; loadGame(s); closeModal(); render(); saveGame(); };
+  document.getElementById('rsNew').onclick=()=>{
+    if(!confirm('Discard the saved campaign and start over?')) return;
+    RESUME_PENDING=false; clearSave(); closeModal(); newGame(); render(); openBriefing();
+  };
+}
+
 // ================= boot =================
-newGame(); render(); openBriefing();
+(function boot(){
+  const s=readSave();                 // capture before newGame() builds the placeholder
+  newGame();                          // so there is a board behind the prompt, not a blank
+  render();
+  if(s){ RESUME_PENDING=true; offerResume(s); }
+  else openBriefing();
+})();
 </script>
 </body>
 </html>
