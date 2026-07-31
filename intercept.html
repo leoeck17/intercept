@@ -644,6 +644,7 @@ function newGame(scn){
     // campaign tally, used for the after-action report
     stats:{cruiseSpawned:0, cruiseLeaked:0, cruiseKilled:0,
            droneSpawned:0, droneLeaked:0, droneKilled:0,
+           ghostSpawned:0, ghostBurned:0, ghostShot:0, ghostFaded:0, ghostRounds:0,
            ballHit:0, ballKilled:0,
            vp:{cities:0, milDamage:0, writeOff:0, squadrons:0, ballistic:0},
            rounds:{ABM:0,SAM:0,SHORAD:0,DDG:0,AAM:0},
@@ -1043,6 +1044,64 @@ function cueBonus(t){
       && dist({col:a.col,row:a.row},th)<=3) ? 3 : 0;
 }
 
+/* ================= OECM — offensive electronic countermeasures =================
+   Some of what your radar shows you was never there. These are not decoy airframes: they are
+   false tracks painted onto your scope by a jammer, which is why they are indistinguishable
+   by construction rather than by assertion. A ghost carries type:'cruise' and every field a
+   real cruise missile carries — same to-hit table, same colour, same glyph, same heading,
+   same aim-point secrecy — and differs only in a flag that nothing outside impactPhase and
+   the reveal check ever reads. There is no code path that can leak one, because there is
+   nothing type-shaped to leak.
+
+   What defeats a jammer is not a better guess, it is BURN-THROUGH: get a real sensor close
+   enough and the true return overwhelms the jamming, and the ghost resolves as false. That
+   is a range, and range is a decision — during the movement phase you choose whether to spend
+   a fighter's move investigating a suspicious track instead of positioning it to shoot. It
+   also hands the 5th-gen a second reason to push forward, on top of its cue: fusion is what
+   the aircraft is for.
+
+   Three ways a ghost ends. Burn-through (free, but you had to be there). A round that would
+   have killed it, whose seeker arrives and finds empty air (the tax). Or it simply reaches
+   its notional aim point and fades — which is also why ghosts must expire: cleanup() counts
+   them as air threats, so one that never resolved would hold the wave open for ever.       */
+/* Burn-through range by sensor. These are deliberately SHORT — shorter than the ranges you
+   shoot at. Generous values were tried first and made the whole system inert: at 1 hex for
+   any unit and 2 for a radar, better than nine ghosts in ten were resolved before the player
+   could ever have fired at one, and a campaign's jamming cost about four rounds. Tightened to
+   these, roughly a third survive to draw fire and OECM costs what it should.
+   The ordering is the point: the 5th-gen is the best discriminator you own — fusion is what
+   the aircraft is FOR (see AC_TYPE) — a ground radar is second, and an ordinary battery can
+   only call a track false if it flies directly overhead. */
+const BURN={RADAR:1, F5:2, DEFAULT:0};               // 0 = same hex only
+const DEFAULT_GHOST_FRAC=0.25;            // ghosts per cruise round (difficulty overrides)
+const ghostFrac=()=>(G&&G.ghostFrac!=null)?G.ghostFrac:DEFAULT_GHOST_FRAC;
+function burnRange(u){
+  if(u.kind==='ac') return u.cue?BURN.F5:BURN.DEFAULT;   // only the fusion aircraft resolves it
+  return u.sensor?BURN.RADAR:BURN.DEFAULT;
+}
+// is any surviving sensor close enough to call this track for what it is?
+function burnedThrough(t){
+  const at={col:t.col,row:t.row};
+  return G.units.some(u=>!u.dead&&u.col!=null&&dist({col:u.col,row:u.row},at)<=burnRange(u))
+      || G.aircraft.some(a=>!a.dead&&a.state==='airborne'&&a.col!=null
+           && dist({col:a.col,row:a.row},at)<=burnRange(a));
+}
+/* Run after enemy movement AND after the player's, or investigating would do nothing —
+   moving a fighter onto a contact has to pay off on the turn you spend the move. */
+function burnThroughPass(){
+  let n=0;
+  for(const t of G.threats){
+    if(!t.ghost||t.dead||t.type==='ballistic') continue;
+    if(!burnedThrough(t)) continue;
+    t.dead=true; n++;
+    // rounds committed to it are not spent yet — hand them straight back
+    G.alloc=G.alloc.filter(a=>a.tid!==t.tid);
+    logMsg('good',`⚡ Burn-through at ${colLabel(t.col)}${t.row+1} — the contact was a jamming ghost. Rounds released.`);
+  }
+  if(n){ G.stats.ghostBurned+=n; G.threats=G.threats.filter(t=>!t.dead); }
+  return n;
+}
+
 /* ================= TURN FLOW ================= */
 
 function startGame(){
@@ -1064,6 +1123,7 @@ function beginCombatTurn(firstWave){
   // 2. Movement (enemy autos now; player moves friendlies)
   advanceBallistics();      // launched -> window
   moveEnemy();
+  burnThroughPass();        // tracks that closed onto a sensor resolve as false
   setPhase('move');
   G.alloc=[];
   resetShots();
@@ -1079,6 +1139,9 @@ function resetShots(){
 }
 
 function toEngage(){
+  // second pass: the player has just moved, and moving a sensor onto a suspicious track has
+  // to pay off on the turn the move was spent — otherwise investigating is not a decision
+  burnThroughPass();
   setPhase('engage');
   logMsg('info','Engagement: commit all shots, then Resolve.');
   render();
@@ -1088,7 +1151,12 @@ function toEngage(){
 const AXIS_LABEL={east:'east',north:'north',south:'south',west:'west'};
 function spawnWave(){
   G.waveNum++; G.wavesSpawned++;
-  const size=waveSizeFor(G.waveNum)+d6();
+  const real=waveSizeFor(G.waveNum)+d6();          // rounds that carry a warhead
+  const ghosts=Math.round(real*ghostFrac());       // false tracks flown alongside them
+  /* Ghosts ride ON TOP of the salvo rather than being carved out of it. Carving would make
+     the ghost fraction a stealth difficulty reduction — more jamming, fewer real missiles.
+     Added on top, OECM is purely an ammunition-and-attention tax, which is what it is for. */
+  const size=real+ghosts;
   const focusRoll=d6();
   const cat = focusRoll<=3?'Military':'Civilian';      // two target classes only
   // available entry axes come from the scenario (any edge — sea or a dry land border)
@@ -1112,7 +1180,7 @@ function spawnWave(){
                      .slice(0, Math.max(6, cnt*2));
       for(let k=0;k<cnt;k++) entries.push(near[Math.floor(Math.random()*near.length)]);
     });
-    logMsg('warn',`Wave ${G.waveNum}: ${size} cruise · focus ${cat} · inbound from the launch corridor`);
+    logMsg('warn',`Wave ${G.waveNum}: ${size} contacts · focus ${cat} · inbound from the launch corridor`);
   } else {
     axes.forEach((axis,ai)=>{
       let edge=edgeHexes(axis); if(edge.length<2) edge=edgeHexes('east');
@@ -1122,7 +1190,7 @@ function spawnWave(){
       const start=Math.floor(Math.random()*(edge.length-window+1));
       for(let k=0;k<cnt;k++) entries.push(edge[start+Math.floor(Math.random()*window)]);
     });
-    logMsg('warn',`Wave ${G.waveNum}: ${size} cruise · focus ${cat} · from the `+
+    logMsg('warn',`Wave ${G.waveNum}: ${size} contacts · focus ${cat} · from the `+
        axes.map(a=>AXIS_LABEL[a]).join(' & ')+(axes.length>1?' (multi-axis raid)':''));
   }
   // ----- coordinated targeting -----
@@ -1133,10 +1201,19 @@ function spawnWave(){
   const cruise=assignSalvo('cruise', entries, order,
     t=> t.city ? CITY_SLOTS_PER_WAVE : Math.ceil(t.integRem/THREAT.cruise.dmg));
   G.threats.push(...cruise);
-  G.stats.cruiseSpawned+=cruise.length;
+  G.stats.cruiseSpawned+=real;
+  /* Ghosts are drawn from the salvo AFTER routing, never allocated separately. Allocate them
+     on their own pass and they systematically inherit the tail of the demand list — decoys
+     always drawing the low-priority slots is a statistical tell, and a sharp player finds it.
+     Marking them afterwards means they fly the same profiles to the same aim points as the
+     real rounds, because they ARE the same rounds until this line. */
+  const marks=cruise.slice();
+  for(let i=marks.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [marks[i],marks[j]]=[marks[j],marks[i]]; }
+  marks.slice(0,ghosts).forEach(t=>{ t.ghost=true; });
+  G.stats.ghostSpawned+=ghosts;
 
   // the drone echelon: launched from the water, on the salvo's bearing and its clock
-  const dn=Math.round(size*droneFrac());
+  const dn=Math.round(real*droneFrac());
   if(dn>0){
     const {entries:dEnt, order:dOrder} = droneTasking(entries,dn,order);
     /* A 1-damage warhead does not crater a runway, so drones are tasked to harass rather
@@ -1420,19 +1497,26 @@ function resolveEngagement(){
         if(u.kind==='ac'){u.ammo--;} else {u.mag--;}
         u.shotsUsed++;
         G.stats.rounds[u.kind==='ac'?'AAM':u.type]++;      // for the cost-exchange tally
+        if(t.ghost) G.stats.ghostRounds++;                 // the OECM tax, reported in the AAR
         if(destroyed){ logMsg('miss',`  ${u.name}: round wasted (already down)`); continue; }
         if(!prof){ logMsg('miss',`  ${u.name}: no firing solution — round wasted`); continue; }
         const roll=d20(); const need=prof.need;
         const tag=prof.mode==='transit'?' [transit]':'';
         if(roll>=need){ destroyed=true;
-          logMsg('hit',`  ${u.name} → ${t.name}${tag}: d20 ${roll} ≥ ${need} ✔ KILL`);
+          // a round that WOULD have killed it is the other way a ghost is revealed: the
+          // seeker arrives, finds empty air, and you learn what you spent the round on
+          if(t.ghost) logMsg('info',`  ${u.name} → ${t.name}${tag}: d20 ${roll} ≥ ${need} — no intercept. The seeker found empty air: it was a jamming ghost.`);
+          else logMsg('hit',`  ${u.name} → ${t.name}${tag}: d20 ${roll} ≥ ${need} ✔ KILL`);
         } else {
           logMsg('miss',`  ${u.name} → ${t.name}${tag}: d20 ${roll} < ${need} ✗ miss`);
         }
       }
     }
     if(destroyed){ t.dead=true;
-      if(t.type==='ballistic') G.stats.ballKilled++;
+      // a ghost was never a weapon, so it is not a kill — counting it would inflate every
+      // intercept rate in the after-action report
+      if(t.ghost) G.stats.ghostShot++;
+      else if(t.type==='ballistic') G.stats.ballKilled++;
       else if(t.type==='drone') G.stats.droneKilled++;
       else G.stats.cruiseKilled++; }
   }
@@ -1499,6 +1583,12 @@ function impactPhase(){
     if(t.type==='ballistic') continue;
     const tgt=targetById(t.targetId);
     if(tgt&&!tgt.dead&&t.col===tgt.col&&t.row===tgt.row){
+      // a ghost reaching its notional aim point simply expires — nothing arrives, nothing
+      // scores. Ghosts MUST expire: cleanup() counts them as air threats, so one that was
+      // never burned through or shot at would hold the wave open for ever.
+      if(t.ghost){ G.stats.ghostFaded++; t.dead=true;
+        logMsg('good',`✸ The track over ${tgt.name} fades from the scope — it was never there.`);
+        continue; }
       scored+=strikeTarget(tgt,t.dmg,t.name);
       if(t.type==='drone') G.stats.droneLeaked++; else G.stats.cruiseLeaked++;
       t.dead=true;
@@ -2974,6 +3064,30 @@ function helpHTML(){
   enemy you face at setup. Either way, relocating the threatened unit between waves is often worth more than another
   magazine. <span class="muted">This campaign: <b class="hl">${doctrine().name}</b>.</span></p>
 
+  <h3>Jamming — not everything on the scope is real</h3>
+  <p>The enemy flies <b class="hl">OECM</b> alongside the raid: offensive electronic countermeasures that paint
+  <b class="hl">false tracks</b> onto your radar. These are not decoy airframes. There is no object out there at all —
+  which is why nothing distinguishes a ghost from a real cruise missile. Same glyph, same colour, same heading, same
+  hidden aim point, same firing solution and the same odds in the popup. Typically about
+  <b class="hl">a quarter</b> of what you see is jamming, but you are never told the number for a given wave.</p>
+  <p>What beats a jammer is not a better guess, it is <b class="hl">burn-through</b>: get a real sensor close enough and
+  the true return overwhelms the jamming, and the track resolves as false. That is a range, and it depends on the sensor:</p>
+  <table class="rules"><tr><th>Sensor</th><th>Burn-through</th><th></th></tr>
+    <tr><td>${sw('#e6edf3')}Airborne 5th-gen</td><td><b>${BURN.F5} hexes</b></td><td>Fusion — the best discriminator you own</td></tr>
+    <tr><td>${sw('#e3b341')}Radar (EWR)</td><td><b>${BURN.RADAR} hex</b></td><td>Adjacent only</td></tr>
+    <tr><td>Any other unit</td><td><b>same hex</b></td><td>Organic sensor — only if it flies directly overhead</td></tr>
+  </table>
+  <p>Those ranges are <b class="hl">shorter than the ranges you shoot at</b>, and that is the whole tension: a SAM
+  reaches 3 hexes but cannot tell you what it is looking at until the track is almost on top of it. Roughly a third of
+  the jamming survives long enough to draw fire.</p>
+  <p>Burn-through is checked <b class="hl">after you move as well as after the enemy does</b>, so pushing a fighter at a
+  suspicious contact pays off on the turn you spend the move. Any rounds already committed to a track that turns out to
+  be a ghost are <b class="hl">handed straight back</b> — you lose nothing but the move.</p>
+  <p>Otherwise you find out the hard way. A round that <i>would</i> have killed it reports <b class="hl">no intercept</b>:
+  the seeker arrived and found empty air. And a ghost never engaged simply fades when it reaches its notional aim point.</p>
+  <p class="tip">Ghosts fly <b>on top of</b> the raid, not instead of part of it — jamming never means fewer real missiles.
+  It costs you rounds, and it costs you the turns you spend watching something that was never there.</p>
+
   <h3>Reading the raid (what you can actually see)</h3>
   <p>Your radar shows <b class="hl">where a missile is and where it is heading</b> — not what it is aimed at. Each track
   draws a fading trail of the path it has flown plus an arrow for its current vector; the threat list reports its bearing
@@ -3125,7 +3239,10 @@ function aarNumbers(){
               + S.ballHit*LEAK_VALUE.ballistic;
   const unspent=G.units.reduce((s,u)=>s+(u.dead?0:u.mag),0)
               + G.reserve.ABM+G.reserve.SAM+G.reserve.SHORAD;
-  return {spend, fired, kills, leakVal, unspent,
+  // what the jamming cost: rounds into ghosts, priced at the average round actually fired
+  const ghostSpend = fired ? Math.round(S.ghostRounds*(spend/fired)) : 0;
+  return {spend, fired, kills, leakVal, unspent, ghostSpend,
+    ghostBurnRate: S.ghostSpawned? S.ghostBurned/S.ghostSpawned : 0,
     cruiseRate: S.cruiseSpawned? S.cruiseKilled/S.cruiseSpawned : 0,
     droneRate: S.droneSpawned? S.droneKilled/S.droneSpawned : 0,
     ballRate: G.ballisticLaunched? S.ballKilled/G.ballisticLaunched : 0,
@@ -3179,6 +3296,25 @@ function evaluationHTML(){
   } else {
     out.push(`<p>Ammunition and opportunity were reasonably matched — ${N.fired} rounds fired,
       ${N.unspent} still in hand at the end.</p>`);
+  }
+
+  // --- what the jamming cost, and how it is beaten
+  if(S.ghostSpawned){
+    const burnPc=pc(N.ghostBurnRate);
+    if(S.ghostRounds){
+      out.push(`<p><b class="hl">${S.ghostSpawned} of the tracks you saw were jamming ghosts</b>, and you put
+        <b class="hl">${S.ghostRounds} round${S.ghostRounds>1?'s':''}</b> — about ${N.ghostSpend} points of
+        interceptor — into empty air. That is what OECM is for: it does not have to destroy anything, it only
+        has to make you spend. You burned through ${burnPc} of them before firing.
+        ${N.ghostBurnRate<0.5?`A sensor close enough resolves a ghost for what it is, but only just: ${BURN.F5} hexes
+        for an airborne 5th-gen, ${BURN.RADAR} for a radar, and an ordinary battery has to have it fly directly
+        overhead. Pushing the fighter at a suspicious contact costs a move; it buys back rounds.`
+        :`Your forward sensors were doing real work.`}</p>`);
+    } else {
+      out.push(`<p><b class="hl">${S.ghostSpawned} of the tracks you saw were jamming ghosts</b>, and you did not
+        waste a single round on one — ${burnPc} were burned through and the rest faded on their own. That is
+        as clean as the electronic fight gets.</p>`);
+    }
   }
 
   // --- losses worth remarking on
@@ -3243,6 +3379,11 @@ function aarHTML(){
       ${row('Drones launched',S.droneSpawned)}
       ${row('— destroyed',`${S.droneKilled} (${pc(N.droneRate)})`,'var(--good)')}
       ${row('— leaked through',`${S.droneLeaked}${S.droneLeaked?` · ${S.droneLeaked*LEAK_VALUE.drone} pts of damage`:''}`,S.droneLeaked?'var(--warn)':'')}`:''}
+      ${S.ghostSpawned?`
+      ${row('Jamming ghosts on the scope',S.ghostSpawned)}
+      ${row('— burned through',`${S.ghostBurned} (${pc(N.ghostBurnRate)})`,S.ghostBurned?'var(--good)':'')}
+      ${row('— shot at before you knew',S.ghostShot,S.ghostShot?'var(--bad)':'')}
+      ${row('— faded unchallenged',S.ghostFaded)}`:''}
       ${row('Ballistic missiles launched',G.ballisticLaunched)}
       ${row('— intercepted',`${S.ballKilled}${G.ballisticLaunched?` (${pc(N.ballRate)})`:''}`,'var(--good)')}
       ${row('— impacted',S.ballHit,S.ballHit?'var(--bad)':'')}
@@ -3262,6 +3403,7 @@ function aarHTML(){
       ${Object.keys(ROUND_COST).filter(k=>S.rounds[k]).map(k=>
         row(`— ${k==='AAM'?'air-to-air':k}`,`${S.rounds[k]} × ${ROUND_COST[k]} pts`)).join('')}
       ${row('Rounds unfired at the end',N.unspent,N.unspent>40?'var(--warn)':'')}
+      ${S.ghostRounds?row('— of those, into jamming ghosts',`${S.ghostRounds} (${N.ghostSpend} pts)`,'var(--warn)'):''}
       ${N.kills?row('Cost per kill',N.perKill.toFixed(1)+' pts'):''}
       ${row('Value of what leaked',N.leakVal+' pts','var(--bad)')}
     </div>
