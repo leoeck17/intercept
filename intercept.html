@@ -639,7 +639,9 @@ function newGame(scn){
     terrain:null, hexFill:null, spawnEdges:['east'],
     noDeploy:null, spawnZone:null,
     layers:(G&&G.layers)||{radar:true,cruise:false,abm:false},  // coverage overlays (persist)
-    seadDoctrine:(G&&G.seadDoctrine)||DEFAULT_DOCTRINE,         // enemy SEAD doctrine (persists)
+    diff:(G&&G.diff)||DEFAULT_DIFF,                             // difficulty (persists)
+    seadDoctrine:(G&&G.seadDoctrine)||null,     // null = follow the difficulty's doctrine
+    dripBand:0, ballisticCap:0, droneFrac:0, ghostFrac:0,       // set by applyDifficulty
     anim:null, animTimer:null, popup:null,
     // campaign tally, used for the after-action report
     stats:{cruiseSpawned:0, cruiseLeaked:0, cruiseKilled:0,
@@ -675,6 +677,10 @@ function newGame(scn){
   // a shorter war is supplied for a shorter war (see ammoScale) — applied once the
   // scenario's own ammo and wave count are both known. baseAmmo is the unscaled allowance,
   // kept so a later length change can re-derive rather than compound.
+  /* Difficulty is applied here — after the scenario has supplied its own ladder and wave
+     count, and BEFORE baseAmmo and ammoScale() read G.waveSizes below. Applying it after
+     would leave the ammunition derived from the unscaled ladder. */
+  applyDifficulty(scenario);
   G.baseAmmo={...G.reserve};
   const k=ammoScale();
   if(k<1) for(const p of ['ABM','SAM','SHORAD']) G.reserve[p]=Math.round(G.reserve[p]*k);
@@ -1322,11 +1328,14 @@ function makeThreat(type,col,row,targetId){
 }
 
 /* ---------- ballistic drip ----------
-   Rolled once per turn, combat and lull alike. DRIP_BAND is the d20 threshold:
-   3 → 15% (the v0.7 rate), 2 → 10%, 1 → 5%. The cap is rarely the binding limit —
-   the campaign usually ends first — so this band is the real tuning lever. */
-let DRIP_BAND=2;                  // 2 in 20 = 10% per turn
-let BALLISTIC_CAP=6;
+   Rolled once per turn, combat and lull alike. The band is the d20 threshold: 3 → 15% (the
+   v0.7 rate), 2 → 10%, 1 → 5%. The cap is rarely the binding limit — the campaign usually
+   ends first — so the band is the real tuning lever, and difficulty moves both.
+   Both live on G so that difficulty is per-campaign and survives a save/resume. As module
+   globals a restored save silently reverted to the defaults, and the player would resume a
+   Veteran campaign on Regular with nothing telling them. */
+const dripBand=()=>(G&&G.dripBand)||2;             // 2 in 20 = 10% per turn
+const ballisticCap=()=>(G&&G.ballisticCap)||6;
 
 /* ---------- SEAD doctrine ----------
    The same ballistic, aimed by two different minds. Counter-battery spends the missile on
@@ -1345,13 +1354,49 @@ const SEAD_DOCTRINE={
     blurb:'Hunts your radars first, then the launchers. Blinding the network is cheaper than killing it.'},
 };
 const DEFAULT_DOCTRINE='battery';
-const doctrineId=()=>(G&&G.seadDoctrine&&SEAD_DOCTRINE[G.seadDoctrine])?G.seadDoctrine:DEFAULT_DOCTRINE;
+
+/* ---------- difficulty ----------
+   Difficulty scales what the ENEMY brings and never what you are given. That falls out of
+   the existing arithmetic rather than needing special-casing: ammoScale() is
+   expectedThreats(maxWaves())/expectedThreats(WAVES_DEFAULT), and expectedThreats reads the
+   same ladder in numerator and denominator — so writing a uniform multiplier into
+   G.waveSizes cancels out of it almost exactly. A harder war is fought with the same
+   magazines, which is the whole point: what changes is the weight of fire, the ballistic
+   tempo, and how much of what you see is real.
+   Victory bands deliberately do NOT move. bandScale() scales them with campaign LENGTH
+   because a one-wave run mechanically cannot generate three waves' worth of VP — that is a
+   normalisation. Difficulty is the opposite: "≤20 VP is Decisive" has to mean the same thing
+   at every setting or the setting means nothing at all. The result names the difficulty
+   instead, so a Decisive on Veteran reads as what it was.                                  */
+const DIFFICULTY=[
+  ['recruit',  'Recruit',  {wave:0.8, drip:1, cap:4,  drone:0.15, ghost:0.10, doctrine:'battery'}],
+  ['regular',  'Regular',  {wave:1.0, drip:2, cap:6,  drone:0.35, ghost:0.25, doctrine:'battery'}],
+  ['veteran',  'Veteran',  {wave:1.25,drip:3, cap:8,  drone:0.50, ghost:0.40, doctrine:'sensor'}],
+  ['nightmare','Nightmare',{wave:1.5, drip:4, cap:10, drone:0.70, ghost:0.55, doctrine:'sensor'}],
+];
+const DEFAULT_DIFF='regular';
+const diffId=()=>(G&&G.diff&&DIFFICULTY.some(d=>d[0]===G.diff))?G.diff:DEFAULT_DIFF;
+const diffRow=()=>DIFFICULTY.find(d=>d[0]===diffId());
+const diffSpec=()=>diffRow()[2];
+const diffName=()=>diffRow()[1];
+/* Write the chosen difficulty into G. The wave multiplier goes onto whatever ladder is in
+   force — the scenario's if it supplied one, otherwise the default — so a scenario that
+   tunes its own wave sizes keeps its shape and simply gets scaled. */
+function applyDifficulty(scenario){
+  const D=diffSpec();
+  G.dripBand=D.drip; G.ballisticCap=D.cap; G.droneFrac=D.drone; G.ghostFrac=D.ghost;
+  const base=(scenario&&scenario.waveSizes)||G.waveSizes||WAVE_SIZE;
+  G.waveSizes=base.map(v=>v==null?null:Math.max(1,Math.round(v*D.wave)));
+}
+// an explicit pick wins; otherwise follow whatever the chosen difficulty fields
+const doctrineId=()=>(G&&G.seadDoctrine&&SEAD_DOCTRINE[G.seadDoctrine])
+  ? G.seadDoctrine : (G?diffSpec().doctrine:DEFAULT_DOCTRINE);
 const doctrine=()=>SEAD_DOCTRINE[doctrineId()];
 const seadPriority=()=>doctrine().pr;
 function ballisticDrip(){
-  if(G.ballisticLaunched>=BALLISTIC_CAP) return;
+  if(G.ballisticLaunched>=ballisticCap()) return;
   const r=d20();
-  if(r<=DRIP_BAND){
+  if(r<=dripBand()){
     G.ballisticLaunched++;
     // A ballistic is aimed at a SET OF COORDINATES that holds something worth hitting at
     // launch time. It strikes those coordinates — whatever is (or is no longer) standing there.
@@ -1384,7 +1429,7 @@ function ballisticDrip(){
     const th=makeThreat('ballistic',tcol,trow,null);
     th.tcol=tcol; th.trow=trow; th.state='launched'; th.desc=desc;
     G.threats.push(th);
-    logMsg('warn',`⚑ BALLISTIC launch ${G.ballisticLaunched}/${BALLISTIC_CAP} → ${desc}. Tracking (no shot this turn).`);
+    logMsg('warn',`⚑ BALLISTIC launch ${G.ballisticLaunched}/${ballisticCap()} → ${desc}. Tracking (no shot this turn).`);
   }
 }
 function advanceBallistics(){
@@ -2436,7 +2481,7 @@ function renderSide(){
      <span class="band" style="color:${bandColour()};border:1px solid ${bandColour()}">${bandName()}</span></div>
    <div class="statgrid">
      <div class="row"><span class="k">Waves</span><span>${G.waveNum}/${maxWaves()}</span></div>
-     <div class="row"><span class="k">Ballistics</span><span>${G.ballisticLaunched}/${BALLISTIC_CAP}</span></div>
+     <div class="row"><span class="k">Ballistics</span><span>${G.ballisticLaunched}/${ballisticCap()}</span></div>
      <div class="row"><span class="k">Contacts</span><span>${vis}${hidden>0?` <span style="color:var(--warn)">+${hidden}?</span>`:''}</span></div>
      <div class="row"><span class="k">Sensors</span><span>${sensors().length} <span class="k">(${radars().length} EWR)</span></span></div>
    </div>
@@ -2604,6 +2649,19 @@ function setupPanel(){
    SCENARIOS.map(s=>`<option value="${s.id}" ${s.id===G.scenarioId?'selected':''}>${s.name}</option>`).join('')+
    `</select>`;
   // the full briefing lives behind 📋 Briefing — keep this panel to the controls
+  h+=`<div class="row" style="margin-top:7px"><span class="k">Difficulty</span>
+      <span><select id="diffPick">`+
+      DIFFICULTY.map(([id,name])=>`<option value="${id}" ${id===diffId()?'selected':''}>${name}</option>`).join('')+
+      `</select></span></div>`;
+  {
+    const D=diffSpec();
+    h+=`<div class="hint">Wave weight <b class="hl">×${D.wave}</b> · ballistic tempo
+        <b class="hl">${Math.round(D.drip/20*100)}%/turn</b> up to <b class="hl">${D.cap}</b> ·
+        drones <b class="hl">${Math.round(D.drone*100)}%</b> · jamming <b class="hl">${Math.round(D.ghost*100)}%</b>
+        of contacts. Difficulty scales what the <i>enemy</i> brings: your ammunition and the
+        victory thresholds are <b class="hl">identical at every setting</b>, so a Decisive on
+        Nightmare is worth what it says.</div>`;
+  }
   h+=`<div class="row" style="margin-top:7px"><span class="k">Campaign length</span>
       <span><select id="wavePick">`+
       [[3,'Full — 3 waves'],[2,'Short — 2 waves'],[1,'Single wave (playtest)']]
@@ -2649,6 +2707,10 @@ function wireSetup(){
   if(wp) wp.onchange=()=>{ G.maxWaves=+wp.value; rescaleAmmo(); render(); };
   const sd=document.getElementById('seadPick');
   if(sd) sd.onchange=()=>{ G.seadDoctrine=sd.value; render(); };
+  // full re-entry rather than an in-place patch: the ladder feeds ammoScale -> DDG magazines
+  // -> autoLoad, and patching one of those without the others desyncs them
+  const dp=document.getElementById('diffPick');
+  if(dp) dp.onchange=()=>{ G.diff=dp.value; G.seadDoctrine=null; newGame(G.scenarioId); render(); };
   document.querySelectorAll('[data-buy]').forEach(b=>{ b.onclick=()=>{
     if(b.dataset.buy==='+') buyUnit(b.dataset.t); else sellUnit(b.dataset.t); };});
   document.querySelectorAll('[data-am]').forEach(b=>{ b.onclick=()=>{
@@ -3359,7 +3421,8 @@ function aarHTML(){
       `<span style="color:${bandColour(c)};border-color:${bandColour(c)};${n===bandName()?'font-weight:700':'opacity:.5'}">${n} ≤ ${c}</span>`).join('')}
       <span style="color:var(--bad);border-color:var(--bad);${bandName()==='Defeat'?'font-weight:700':'opacity:.5'}">Defeat &gt; ${bandBar()[bandBar().length-1][1]}</span></div>
     ${maxWaves()!==WAVES_DEFAULT?`<div class="hint">Thresholds scaled to a ${maxWaves()}-wave campaign.</div>`:''}
-    <div class="hint">Fought under <b class="hl">${doctrine().name}</b> SEAD doctrine.</div>
+    <div class="hint"><b class="hl">${diffName()}</b> · <b class="hl">${doctrine().name}</b> SEAD doctrine.
+      ${diffId()!==DEFAULT_DIFF?'Victory thresholds are the same at every difficulty — this result is directly comparable.':''}</div>
 
     <h4>Assessment</h4>
     ${evaluationHTML()}
