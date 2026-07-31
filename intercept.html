@@ -643,6 +643,7 @@ function newGame(scn){
     anim:null, animTimer:null, popup:null,
     // campaign tally, used for the after-action report
     stats:{cruiseSpawned:0, cruiseLeaked:0, cruiseKilled:0,
+           droneSpawned:0, droneLeaked:0, droneKilled:0,
            ballHit:0, ballKilled:0,
            vp:{cities:0, milDamage:0, writeOff:0, squadrons:0, ballistic:0},
            rounds:{ABM:0,SAM:0,SHORAD:0,DDG:0,AAM:0},
@@ -1125,32 +1126,112 @@ function spawnWave(){
        axes.map(a=>AXIS_LABEL[a]).join(' & ')+(axes.length>1?' (multi-axis raid)':''));
   }
   // ----- coordinated targeting -----
-  // 1) demand: which targets are struck and how many times, by focus/VP priority
-  //    (saturate each to destruction, then spill overkill onto the priority order).
   const order = orderedTargets(cat);
   if(!order.length){ logMsg('info','No surviving targets remain to strike.'); return; }
+
+  // the cruise salvo: saturate each site to destruction, then spill onto the priority order
+  const cruise=assignSalvo('cruise', entries, order,
+    t=> t.city ? CITY_SLOTS_PER_WAVE : Math.ceil(t.integRem/THREAT.cruise.dmg));
+  G.threats.push(...cruise);
+  G.stats.cruiseSpawned+=cruise.length;
+
+  // the drone echelon: launched from the water, on the salvo's bearing and its clock
+  const dn=Math.round(size*droneFrac());
+  if(dn>0){
+    const {entries:dEnt, order:dOrder} = droneTasking(entries,dn,order);
+    /* A 1-damage warhead does not crater a runway, so drones are tasked to harass rather
+       than to kill: one tap per hard site, everything else piled onto the cities, which can
+       never be saturated and score for ever. That spreads the echelon across whatever is
+       local to the launch point instead of stacking it on the highest-VP airbase — and the
+       spread is the point, because it is what splits your coverage. */
+    const drones=assignSalvo('drone', dEnt, dOrder, t=> t.city ? CITY_SLOTS_PER_WAVE : 1);
+    G.threats.push(...drones);
+    G.stats.droneSpawned+=drones.length;
+    logMsg('warn',`   …and ${drones.length} drone${drones.length===1?'':'s'} off the water — slow, but they will sit in your envelopes.`);
+  }
+}
+
+/* One salvo's worth of coordinated targeting. Build the demand list, then match spawn points
+   to it so total flight distance is minimised (greedy nearest-pair): the round nearest a
+   target takes it, so none flies across the whole map when a closer-spawned one could strike
+   it more reliably. Shared by the cruise salvo and the drone echelon — it is the same raid
+   plan run twice, and giving drones their own pass stops them eating the salvo's demand. */
+function assignSalvo(kind, entries, order, wantOf){
+  const n=entries.length; if(!n||!order.length) return [];
   const slots=[];
-  order.forEach(t=>{
-    // a city can never be saturated, so it draws a fixed allotment instead of "hits to kill"
-    const want = t.city ? CITY_SLOTS_PER_WAVE : Math.ceil(t.integRem/THREAT.cruise.dmg);
-    for(let i=0;i<want;i++) slots.push(t);
-  });
-  for(let oi=0; slots.length<size; oi++) slots.push(order[oi%order.length]);
-  if(slots.length>size) slots.length=size;                    // keep the highest-priority demand
-  // 2) the salvo "talks to itself": match each spawn point to a target-slot so total flight
-  //    distance is minimised (greedy nearest-pair). The missile nearest a target takes it, so
-  //    none flies across the whole map when a closer-spawned one could strike it more reliably.
+  order.forEach(t=>{ const w=wantOf(t); for(let i=0;i<w;i++) slots.push(t); });
+  for(let oi=0; slots.length<n; oi++) slots.push(order[oi%order.length]);
+  if(slots.length>n) slots.length=n;                    // keep the highest-priority demand
   const pairs=[];
-  for(let i=0;i<size;i++) for(let j=0;j<size;j++)
+  for(let i=0;i<n;i++) for(let j=0;j<n;j++)
      pairs.push([dist(entries[i],{col:slots[j].col,row:slots[j].row}), i, j]);
   pairs.sort((a,b)=>a[0]-b[0]);
-  const usedE=new Uint8Array(size), usedS=new Uint8Array(size), assign=new Array(size);
+  const usedE=new Uint8Array(n), usedS=new Uint8Array(n), assign=new Array(n);
   let done=0;
   for(const p of pairs){ const i=p[1],j=p[2]; if(usedE[i]||usedS[j])continue;
-     usedE[i]=usedS[j]=1; assign[i]=j; if(++done===size)break; }
-  for(let i=0;i<size;i++){ const s=slots[assign[i]];
-     G.threats.push(makeThreat('cruise', entries[i].col, entries[i].row, s.id)); }
-  G.stats.cruiseSpawned+=size;
+     usedE[i]=usedS[j]=1; assign[i]=j; if(++done===n)break; }
+  const out=[];
+  for(let i=0;i<n;i++) out.push(makeThreat(kind, entries[i].col, entries[i].row, slots[assign[i]].id));
+  return out;
+}
+
+/* ---------- the drone echelon ----------
+   A one-way attack drone does 200 km/h — one hex a turn, and that speed is the honest number.
+   What it cannot do is fly the mission the cruise salvo flies. Two things have to be true or
+   it never arrives at all, and since cleanup() holds a wave open until every air threat is
+   gone, a drone still crawling inbound stalls the lull outright:
+
+     1. It does not cross the ocean. The enemy puts these in the water close in, off the same
+        bearing as the raid — a 3-6 hex standoff instead of a 20-hex board-edge run.
+     2. It does not cross the island either. Standoff alone is not enough: a drone launched
+        off the east coast and tasked against a west-coast city still flies 20+ hexes. So the
+        echelon is tasked LOCALLY — only against what lies within DRONE_REACH of where it went
+        in the water. That is also what a short-range weapon is actually for: you position the
+        boats for the targets you want, and the drones hit what is in front of them.
+
+   Together those give a 4-10 hex run — the same 4-to-9 turns the cruise salvo spends inbound —
+   so the echelon arrives ON the salvo's clock rather than twenty turns behind it.
+
+   What makes drones a problem is not reach, it is dwell: at one hex a turn a drone sits inside
+   a SAM envelope for four consecutive turns, offering — and demanding — a shot on every one of
+   them. And because they launch inside your radar cover, they are the threat you always see,
+   in deliberate contrast to cruise, which you often do not. They are how the enemy makes you
+   spend. Note the correct answer is frequently to let them through: 1 damage, 1 VP, and a
+   round costs more than the leak does.                                                      */
+const DRONE_STANDOFF=[3,6];               // sea hexes this far from land are the launch belt
+const DRONE_SPREAD=2;                     // the boat group is this wide, not a whole coastline
+const DRONE_REACH=7;                      // a drone is only tasked this far from the group
+const DEFAULT_DRONE_FRAC=0.35;            // drones per cruise round (difficulty overrides)
+const droneFrac=()=>(G&&G.droneFrac!=null)?G.droneFrac:DEFAULT_DRONE_FRAC;
+function droneTasking(salvoEntries,n,order){
+  const belt=[];
+  if(G.distToLand) for(let c=0;c<COLS;c++)for(let r=0;r<ROWS;r++){
+    if(isLand(c,r)) continue;
+    const d2=G.distToLand[c][r];
+    if(d2>=DRONE_STANDOFF[0]&&d2<=DRONE_STANDOFF[1]) belt.push({col:c,row:r});
+  }
+  /* One launch point — this is a boat group, not a coastline. It is sited off whatever the
+     raid actually wants to hit rather than off the cruise salvo's entry corridor: those
+     corridors sit at the board edge, which on a real map can be twenty hexes from the nearest
+     target, and anchoring to one put the group somewhere no drone could reach. So pick a seed
+     target from the top of the raid's priority order, then take the belt hex nearest it —
+     breaking ties toward the salvo's bearing, so the echelon still comes in with the raid
+     where the geography allows it. Reachability is then true by construction. */
+  const anchor=salvoEntries[Math.floor(Math.random()*salvoEntries.length)]||{col:COLS-1,row:0};
+  const seed=order[Math.floor(Math.random()*Math.min(3,order.length))]||{col:0,row:0};
+  const reachable=belt.filter(h=>dist(h,seed)<=DRONE_REACH);
+  const launch=reachable.length
+    ? reachable.sort((a,b)=>dist(a,anchor)-dist(b,anchor))[0]
+    : (belt.slice().sort((a,b)=>dist(a,seed)-dist(b,seed))[0]
+       || salvoEntries[0] || anchor);                // all-land map: fall back to the edge
+  const pool=belt.filter(h=>dist(h,launch)<=DRONE_SPREAD);
+  if(!pool.length) pool.push(launch);
+  const entries=[]; for(let k=0;k<n;k++) entries.push(pool[Math.floor(Math.random()*pool.length)]);
+  // task only what is local to the group, keeping the raid's VP priority within that set.
+  // The seed is in reach by construction, so this is never empty on a map with any sea.
+  const byNear=order.slice().sort((a,b)=>dist(launch,a)-dist(launch,b));
+  const inReach=byNear.filter(t=>dist(launch,t)<=DRONE_REACH);
+  return {entries, order:(inReach.length?inReach:byNear.slice(0,3))};
 }
 function orderedTargets(cat){
   const inCat=aliveTargets().filter(t=>t.cat===cat).sort((a,b)=>b.vp-a.vp);
@@ -1351,7 +1432,9 @@ function resolveEngagement(){
       }
     }
     if(destroyed){ t.dead=true;
-      if(t.type==='ballistic') G.stats.ballKilled++; else G.stats.cruiseKilled++; }
+      if(t.type==='ballistic') G.stats.ballKilled++;
+      else if(t.type==='drone') G.stats.droneKilled++;
+      else G.stats.cruiseKilled++; }
   }
   G.threats=G.threats.filter(t=>!t.dead);
   G.alloc=[];
@@ -1417,7 +1500,7 @@ function impactPhase(){
     const tgt=targetById(t.targetId);
     if(tgt&&!tgt.dead&&t.col===tgt.col&&t.row===tgt.row){
       scored+=strikeTarget(tgt,t.dmg,t.name);
-      G.stats.cruiseLeaked++;
+      if(t.type==='drone') G.stats.droneLeaked++; else G.stats.cruiseLeaked++;
       t.dead=true;
     }
   }
@@ -2806,6 +2889,22 @@ function helpHTML(){
   keeps costing you every time a leaker gets through — but there are four of them and you cannot cover them all.
   Deciding what to write off is the game.</p>
 
+  <h3>What is coming at you</h3>
+  <table class="rules"><tr><th>Weapon</th><th>Glyph</th><th>Speed</th><th>Damage</th><th>Behaviour</th></tr>
+    <tr><td>${sw('#f0883e')}Cruise missile</td><td><b>C</b></td><td>3 hex/turn</td><td>2</td>
+      <td>The main effort. Flies low — <b class="hl">−3</b> to hit it at range 3+. Enters from a sea edge.</td></tr>
+    <tr><td>${sw('#db6d28')}Attack drone</td><td><b>D</b></td><td>1 hex/turn</td><td>1</td>
+      <td>Launched from the water close in, not from the edge. Slow, easy to hit, cheap to let through.</td></tr>
+    <tr><td>${sw('#f85149')}Ballistic missile</td><td><b>⚑</b></td><td>—</td><td>3</td>
+      <td>Arrives on coordinates. Only an ABM battery or a BMD destroyer within range 4 can touch it.</td></tr>
+  </table>
+  <p><b class="hl">Drones are how the enemy makes you spend.</b> At one hex a turn a drone sits inside a SAM
+  envelope for four consecutive turns, offering — and demanding — a shot on every one of them. They launch from
+  <i>inside</i> your radar cover, so unlike cruise they are the threat you always see. Big, slow and unmissable.</p>
+  <p class="tip">The correct answer is frequently to <b class="hl">let them through</b>. A drone does 1 damage and
+  is worth 1 point to the enemy — often less than the round it would take to stop it. Every drone you shoot at is
+  a round not available for the cruise missile behind it. That call, made under a clock, is the point of them.</p>
+
   <h3>Your forces</h3>
   <table class="rules"><tr><th>Unit</th><th>Range</th><th>Shots/turn</th><th>Notes</th></tr>
     <tr><td>${sw('#8957e5')}ABM battery ×2</td><td>4</td><td>1</td><td>Only unit (with the destroyer) that can kill <b>ballistic</b> missiles</td></tr>
@@ -3021,12 +3120,14 @@ function aarNumbers(){
   const S=G.stats;
   const spend=Object.keys(ROUND_COST).reduce((s,k)=>s+(S.rounds[k]||0)*ROUND_COST[k],0);
   const fired=Object.values(S.rounds).reduce((a,b)=>a+b,0);
-  const kills=S.cruiseKilled+S.ballKilled;
-  const leakVal=S.cruiseLeaked*LEAK_VALUE.cruise + S.ballHit*LEAK_VALUE.ballistic;
+  const kills=S.cruiseKilled+S.droneKilled+S.ballKilled;
+  const leakVal=S.cruiseLeaked*LEAK_VALUE.cruise + S.droneLeaked*LEAK_VALUE.drone
+              + S.ballHit*LEAK_VALUE.ballistic;
   const unspent=G.units.reduce((s,u)=>s+(u.dead?0:u.mag),0)
               + G.reserve.ABM+G.reserve.SAM+G.reserve.SHORAD;
   return {spend, fired, kills, leakVal, unspent,
     cruiseRate: S.cruiseSpawned? S.cruiseKilled/S.cruiseSpawned : 0,
+    droneRate: S.droneSpawned? S.droneKilled/S.droneSpawned : 0,
     ballRate: G.ballisticLaunched? S.ballKilled/G.ballisticLaunched : 0,
     perKill: kills? spend/kills : 0};
 }
@@ -3045,7 +3146,7 @@ function evaluationHTML(){
   }[band];
   out.push(`<p><b class="hl">${verdict}</b> The enemy finished on <b>${G.enemyVP} VP</b>
     (${band}${band!=='Defeat'?` — the next band down begins at ${bandBar().find(v=>v[0]===band)[1]+1}`:''}).
-    You destroyed <b>${N.kills}</b> of the ${S.cruiseSpawned+G.ballisticLaunched} weapons launched at you —
+    You destroyed <b>${N.kills}</b> of the ${S.cruiseSpawned+S.droneSpawned+G.ballisticLaunched} weapons launched at you —
     ${pc(N.cruiseRate)}% of the cruise missiles and ${G.ballisticLaunched?pc(N.ballRate)+'% of the ballistics':'no ballistics were fired'}.</p>`);
 
   // --- what actually drove the score
@@ -3138,6 +3239,10 @@ function aarHTML(){
       ${row('Cruise missiles launched',S.cruiseSpawned)}
       ${row('— destroyed',`${S.cruiseKilled} (${S.cruiseSpawned?pc(N.cruiseRate):'—'})`,'var(--good)')}
       ${row('— leaked through',S.cruiseLeaked,S.cruiseLeaked?'var(--bad)':'')}
+      ${S.droneSpawned?`
+      ${row('Drones launched',S.droneSpawned)}
+      ${row('— destroyed',`${S.droneKilled} (${pc(N.droneRate)})`,'var(--good)')}
+      ${row('— leaked through',`${S.droneLeaked}${S.droneLeaked?` · ${S.droneLeaked*LEAK_VALUE.drone} pts of damage`:''}`,S.droneLeaked?'var(--warn)':'')}`:''}
       ${row('Ballistic missiles launched',G.ballisticLaunched)}
       ${row('— intercepted',`${S.ballKilled}${G.ballisticLaunched?` (${pc(N.ballRate)})`:''}`,'var(--good)')}
       ${row('— impacted',S.ballHit,S.ballHit?'var(--bad)':'')}
