@@ -2553,14 +2553,22 @@ function phaseHint(){
   }
 }
 
+/* Space drives "the action for this phase". Rather than keep a second phase->function map
+   that would drift from the toolbar, the button marked primary IS the binding — whatever
+   renderToolbar decides the main action is, that is what the key does. PRIMARY holds a DOM
+   node, so it must stay a module global and never go on G: it is not serialisable. */
+let PRIMARY=null;
 function renderToolbar(){
+  PRIMARY=null;
   const tb=document.getElementById('toolbar'); tb.innerHTML='';
   const rowA=document.createElement('div'); rowA.className='tbar';   // what to do now
   const rowB=document.createElement('div'); rowB.className='tbar';   // what to look at
   tb.appendChild(rowA); tb.appendChild(rowB);
   const btn=(row,label,cls,fn,dis)=>{const b=document.createElement('button');
     b.textContent=label;if(cls)b.className=cls;b.disabled=!!dis;
-    b.onclick=fn;row.appendChild(b);return b;};
+    b.onclick=fn;row.appendChild(b);
+    if(cls==='primary'){ PRIMARY=b; b.title=label+' — Space'; }
+    return b;};
 
   // ---- row A: the action for this phase, then secondary actions ----
   if(G.phase==='setup'){
@@ -2598,7 +2606,7 @@ function renderToolbar(){
     for(const key of ['radar','cruise','abm']){
       const L=COVERAGE_LAYERS[key], on=G.layers&&G.layers[key];
       const b=btn(rowB,(on?'◉ ':'○ ')+L.label,'tog',()=>{ G.layers[key]=!G.layers[key]; render(); });
-      b.title=L.label+' coverage outline';
+      b.title=L.label+' coverage outline — '+({radar:'R',cruise:'C',abm:'V'}[key]);
       if(on){ b.style.borderColor=L.colour; b.style.color=L.colour; }
     }
   }
@@ -3282,7 +3290,24 @@ function helpHTML(){
     <b>purple</b> for the ballistic umbrella (ABM batteries and BMD destroyers). Each draws one line around the
     <b>combined</b> area, so overlapping units merge into a single envelope and you can see your gaps at a glance.</li>
     <li>Grey-shaded ground is <b class="hl">neutral territory</b> — you may not deploy or move onto it.</li>
+    <li>The board and the contact list are two views of the same thing — the <b class="hl">C</b> and
+    <b class="hl">D</b> glyphs mark cruise missiles and drones, <b class="hl">⚑</b> a ballistic.</li>
   </ul>
+  <p>Every campaign <b class="hl">saves itself automatically</b>. Close the tab mid-wave and you will be offered
+  the campaign back when you return.</p>
+
+  <h4 style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);margin:16px 0 6px">Keyboard</h4>
+  <table class="rules"><tr><th>Key</th><th>Does</th></tr>
+    <tr><td><span class="kbd">Space</span></td><td>The action for this phase — whatever the highlighted button says
+      (Start, Engagement, Resolve, Next turn, End lull, After-action)</td></tr>
+    <tr><td><span class="kbd">U</span></td><td>Undo move</td></tr>
+    <tr><td><span class="kbd">X</span></td><td>Clear all committed shots (Engagement only)</td></tr>
+    <tr><td><span class="kbd">R</span> <span class="kbd">C</span> <span class="kbd">V</span></td>
+      <td>Toggle the radar / cruise / ABM coverage outlines</td></tr>
+    <tr><td><span class="kbd">B</span> <span class="kbd">H</span> <span class="kbd">A</span></td>
+      <td>Briefing · this rules sheet · after-action report (works mid-campaign)</td></tr>
+    <tr><td><span class="kbd">Esc</span></td><td>Close a panel or dialog</td></tr>
+  </table>
   <p class="muted" style="margin-top:14px">Numbers are a provisional design draft (rules v0.7). Have fun holding the line.</p>`;
 }
 function openHelp(){ const m=document.getElementById('modal');
@@ -3554,10 +3579,28 @@ function openBriefing(){
 function closeModal(){ document.getElementById('modal').classList.remove('on'); }
 document.getElementById('modalClose').onclick=closeModal;
 document.getElementById('modal').addEventListener('click',e=>{ if(e.target.id==='modal') closeModal(); });
+/* Only Escape existed before. Everything here is a single unmodified key: ignored while a
+   field has focus (the export textarea and the setup selects swallow real typing), ignored
+   under any modifier so the browser's own shortcuts still work, and ignored while a modal is
+   up, which owns the keyboard until it is dismissed. */
+const typingNow=()=>{ const a=document.activeElement;
+  return !!a && (/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)||a.isContentEditable); };
 document.addEventListener('keydown',e=>{
-  if(e.key!=='Escape') return;
-  if(document.getElementById('modal').classList.contains('on')) closeModal();
-  else closePopup();
+  const modalOn=document.getElementById('modal').classList.contains('on');
+  if(e.key==='Escape'){ if(modalOn) closeModal(); else closePopup(); return; }
+  if(e.ctrlKey||e.metaKey||e.altKey||typingNow()||modalOn||!G) return;
+  const k=e.key.toLowerCase();
+  if(e.key===' '||e.key==='Enter'){        // Space would otherwise scroll the board
+    e.preventDefault(); if(PRIMARY&&!PRIMARY.disabled) PRIMARY.click(); return; }
+  if(k==='u'){ e.preventDefault(); undoMove(); return; }
+  if(k==='x'){ if(G.phase==='engage'){ G.alloc=[]; render(); } return; }
+  if(k==='r'||k==='c'||k==='v'){
+    const key={r:'radar',c:'cruise',v:'abm'}[k];
+    if(G.layers&&G.phase!=='editor'){ G.layers[key]=!G.layers[key]; render(); }
+    return; }
+  if(k==='b'){ openBriefing(); return; }
+  if(k==='h'||e.key==='?'){ openHelp(); return; }
+  if(k==='a'){ openAAR(); return; }        // reads live stats — fine mid-campaign
 });
 
 /* ================= CAMPAIGN SAVE =================
