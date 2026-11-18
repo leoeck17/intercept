@@ -168,6 +168,60 @@
 </style>
 </head>
 <body>
+<!-- Unit icons, defined once and referenced everywhere (board, roster, rules) with <use>.
+     Drawn in a 20×20 box centred on 0,0; they paint in currentColor, so whoever uses one
+     picks the colour. Kept in an off-screen SVG rather than display:none, which some
+     browsers refuse to resolve <use> references into. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
+  <!-- ABM: one heavy interceptor under a ballistic arc -->
+  <symbol id="ico-ABM" viewBox="-10 -10 20 20">
+    <path d="M-8.5 6 Q0 -17 8.5 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2.2 1.6" stroke-linecap="round"/>
+    <path fill="currentColor" d="M0 -6.5 L2 -3 L2 4 L4.2 8 L2 7.2 L-2 7.2 L-4.2 8 L-2 4 L-2 -3 Z"/>
+  </symbol>
+  <!-- SAM: twin missiles on a raised launcher -->
+  <symbol id="ico-SAM" viewBox="-10 -10 20 20">
+    <g fill="currentColor" transform="translate(-0.5 -0.5) rotate(-38)">
+      <path d="M-7 -3.6 L3.5 -3.6 L6.8 -2.2 L3.5 -0.8 L-7 -0.8 Z"/>
+      <path d="M-7 0.8 L3.5 0.8 L6.8 2.2 L3.5 3.6 L-7 3.6 Z"/>
+    </g>
+    <path fill="currentColor" d="M-1.6 3 L1.6 3 L2.4 6.2 L-2.4 6.2 Z"/>
+    <rect fill="currentColor" x="-8" y="6.2" width="16" height="2.4" rx="0.8"/>
+  </symbol>
+  <!-- SHORAD: a domed turret with twin barrels — the gun, not the missile -->
+  <symbol id="ico-SHORAD" viewBox="-10 -10 20 20">
+    <path fill="currentColor" d="M-6.5 5 A6.5 6.5 0 0 1 6.5 5 Z"/>
+    <g stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+      <line x1="1" y1="0" x2="8.5" y2="-6.5"/><line x1="2.6" y1="1.8" x2="9.2" y2="-3.6"/>
+    </g>
+    <rect fill="currentColor" x="-8.5" y="5.6" width="17" height="3" rx="1.5"/>
+  </symbol>
+  <!-- Radar: a dish on a mast, with a wave going out -->
+  <symbol id="ico-RADAR" viewBox="-10 -10 20 20">
+    <path d="M-7.5 -6 Q-4 3.5 6 -0.5" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+    <line x1="-1.2" y1="-1" x2="2.4" y2="-6.6" stroke="currentColor" stroke-width="1.3"/>
+    <circle cx="2.4" cy="-6.6" r="1.3" fill="currentColor"/>
+    <line x1="-1.2" y1="1.5" x2="-1.2" y2="6.5" stroke="currentColor" stroke-width="2"/>
+    <rect fill="currentColor" x="-5.5" y="6.4" width="9" height="2.2" rx="0.8"/>
+    <path d="M5.6 -8.4 A4 4 0 0 1 8.6 -4.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+  </symbol>
+  <!-- Destroyer: hull and superstructure in profile -->
+  <symbol id="ico-DDG" viewBox="-10 -10 20 20">
+    <path fill="currentColor" d="M-9.5 1.5 L9.5 1.5 L6.5 6 L-7.5 6 Z"/>
+    <path fill="currentColor" d="M-4 1.5 L-4 -2 L-1.5 -2 L-1.5 -4.5 L2 -4.5 L2 -2 L4 -2 L4 1.5 Z"/>
+    <line x1="0.2" y1="-4.5" x2="0.2" y2="-9" stroke="currentColor" stroke-width="1.2"/>
+    <line x1="-1.8" y1="-7.4" x2="2.2" y2="-7.4" stroke="currentColor" stroke-width="1.1"/>
+    <line x1="5.2" y1="0.4" x2="8.4" y2="-1.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+  </symbol>
+  <!-- 5th-gen: a solid stealth delta with a sawtooth trailing edge — deliberately nothing
+       like the 4th-gen's thin cross, since both share near-white colours -->
+  <symbol id="ico-F5" viewBox="-10 -10 20 20">
+    <path fill="currentColor" d="M0 -9.5 L9.6 6.2 L5.2 6.2 L3 8.8 L0 6.6 L-3 8.8 L-5.2 6.2 L-9.6 6.2 Z"/>
+  </symbol>
+  <!-- 4th-gen: conventional jet — slim fuselage, swept wings, separate tailplanes -->
+  <symbol id="ico-F4" viewBox="-10 -10 20 20">
+    <path fill="currentColor" d="M0 -9.5 L1.3 -5.5 L1.3 -2 L9 3.2 L9 5 L1.3 2.6 L1.1 6.2 L4.4 8.4 L4.4 9.6 L0 8.6 L-4.4 9.6 L-4.4 8.4 L-1.1 6.2 L-1.3 2.6 L-9 5 L-9 3.2 L-1.3 -2 L-1.3 -5.5 Z"/>
+  </symbol>
+</defs></svg>
 <div id="app">
   <!-- LEFT: standing state — how the campaign is going and what you own -->
   <div id="leftPane">
@@ -1952,6 +2006,36 @@ const SVGNS="http://www.w3.org/2000/svg";
 function el(tag,attrs,txt){ const e=document.createElementNS(SVGNS,tag);
   for(const k in attrs)e.setAttribute(k,attrs[k]); if(txt!=null)e.textContent=txt; return e; }
 
+/* ---------- unit icons ----------
+   Colour says WHAT FAMILY a unit belongs to; the silhouette says WHICH ONE it is. At token
+   size the old three-letter labels (SAM / SHR / RDR / ABM) were near-identical grey blocks,
+   and SAM vs SHORAD — the most frequent confusion — differed by two letters. The short label
+   now appears only on the unit you have selected, where there is room to read it. */
+const UNIT_LABEL={ABM:'ABM',SAM:'SAM',SHORAD:'SHORAD',RADAR:'Radar',DDG:'Destroyer',F5:'5th-gen',F4:'4th-gen'};
+const iconKey=u=>u.sensor?'RADAR':u.type;
+// on the board: the icon as an SVG <use>, painted in `ink`
+function boardIcon(key,x,y,size,ink){
+  return el('use',{href:'#ico-'+key,x:x-size/2,y:y-size/2,width:size,height:size,
+    style:'color:'+ink,'pointer-events':'none'});
+}
+// a small count pip on a token's lower-right shoulder (magazine, or squadrons in a stack)
+function tokenPip(g,x,y,ring,txt){
+  g.appendChild(el('circle',{cx:x+10,cy:y+9,r:6.5,fill:'#0d1117',stroke:ring,'stroke-width':1.2,'pointer-events':'none'}));
+  g.appendChild(el('text',{x:x+10,y:y+11.8,'text-anchor':'middle','font-size':8,'font-weight':700,
+    fill:'#e6edf3','pointer-events':'none'},txt));
+}
+// the label under a selected token, haloed so it reads over any terrain
+function tokenLabel(g,x,y,txt){
+  g.appendChild(el('text',{x,y:y+24,'text-anchor':'middle','font-size':9,'font-weight':700,
+    fill:'#e6edf3',stroke:'#0d1117','stroke-width':3,'paint-order':'stroke',
+    'stroke-linejoin':'round','pointer-events':'none'},txt));
+}
+// in HTML (roster, rules): the same icon in a coloured badge
+const iconBadge=(key,colour,title)=>`<span class="badge" style="background:${colour}"${title?` title="${title}"`:''}>`+
+  `<svg width="18" height="18" aria-hidden="true"><use href="#ico-${key}" width="18" height="18" style="color:#04121f"/></svg></span>`;
+const iconSw=(key,colour)=>`<span class="swatch" style="background:${colour};width:16px;height:16px;border-radius:4px;`+
+  `display:inline-grid;place-items:center"><svg width="13" height="13" aria-hidden="true"><use href="#ico-${key}" width="13" height="13" style="color:#04121f"/></svg></span>`;
+
 function render(){
   renderBoard();
   // Mid-animation only the board moves: the panels read t.col/t.row, which are already at
@@ -2035,7 +2119,7 @@ function airbaseHTML(tg){
   for(const a of based){
     const onSta=a.state==='airborne'?` · on station ${a.airborneTurns||0}/${loiterOf(a)}`:'';
     h+=`<div class="unit" style="align-items:flex-start">
-      <span class="badge" style="background:${a.color};color:#04121f">${a.type}</span>
+      ${iconBadge(a.type,a.color,UNIT_LABEL[a.type])}
       <div style="flex:1">
         <div>${a.name} <span class="k">${a.state}${onSta}</span>${a.cue?' <span class="tag">cue +3</span>':''}</div>
         <div class="k" style="font-size:11px">ammo ${a.ammo}/${a.load} · sorties ${a.sortiesLeft}</div>
@@ -2225,19 +2309,13 @@ function renderBoard(){
     const g=el('g',{}); g.style.cursor='pointer';
     g.addEventListener('click',(e)=>{e.stopPropagation();onUnitClick(u);});
     const yy=y+(targetAt(u.col,u.row)?18:0);
+    const key=iconKey(u), isSel=G.selUnit===u.uid;
+    g.appendChild(el('title',{},`${UNIT_LABEL[key]}`+(u.sensor?` · detect ${u.detect}`:` · ${u.mag}/${UTYPE[u.type].mag} rounds · range ${u.range}`)));
     g.appendChild(el('circle',{cx:x,cy:yy,r:12,
-      fill:u.color,stroke:sel,'stroke-width':G.selUnit===u.uid?3:1.5,opacity:.95}));
-    if(u.sensor){                                   // radar: dish arcs instead of a magazine
-      g.appendChild(el('path',{d:`M ${x-6} ${yy+4} A 7 7 0 0 1 ${x+6} ${yy+4}`,
-        fill:'none',stroke:'#04121f','stroke-width':1.6}));
-      g.appendChild(el('text',{x,y:yy-1,'text-anchor':'middle','font-size':7,
-        'font-weight':700,fill:'#04121f'},'RDR'));
-    } else {
-      g.appendChild(el('text',{x,y:yy+1,'text-anchor':'middle','font-size':8,
-        'font-weight':700,fill:'#04121f'},u.type==='SHORAD'?'SHR':u.type));
-      g.appendChild(el('text',{x,y:yy+11,'text-anchor':'middle','font-size':8,
-        fill:'#04121f'},String(u.kind==='ac'?u.ammo:u.mag)));
-    }
+      fill:u.color,stroke:sel,'stroke-width':isSel?3:1.5,opacity:.95}));
+    g.appendChild(boardIcon(key,x,yy,17,'#04121f'));
+    if(!u.sensor) tokenPip(g,x,yy,u.color,String(u.mag));   // radars carry no magazine
+    if(isSel) tokenLabel(g,x,yy,UNIT_LABEL[key]);
     svg.appendChild(g);
   }
   // airborne squadrons, STACKED BY HEX like the contacts are
@@ -2255,20 +2333,16 @@ function renderBoard(){
     const sel=st.list.some(a=>a.uid===G.selUnit);
     const g=el('g',{}); g.style.cursor='pointer';
     g.addEventListener('click',(e)=>{e.stopPropagation();onAcStackClick(st.list);});
-    if(n>1){
-      const s=14;                                    // bigger chevron for a stacked flight
-      svg.appendChild(el('circle',{cx:x,cy:y+1,r:16,fill:'none',stroke:lead.color,
-        'stroke-width':1.3,'stroke-opacity':0.5,'pointer-events':'none'}));
-      g.appendChild(el('polygon',{points:`${x},${y-s} ${x+s-1},${y+s-3} ${x-s+1},${y+s-3}`,
-        fill:lead.color,stroke:sel?'#58a6ff':'#04121f','stroke-width':sel?3:1.5}));
-      g.appendChild(el('text',{x,y:y+9,'text-anchor':'middle','font-size':11,'font-weight':700,
-        fill:'#04121f'},String(n)));
-    } else {
-      g.appendChild(el('polygon',{points:`${x},${y-12} ${x+11},${y+9} ${x-11},${y+9}`,
-        fill:lead.color,stroke:sel?'#58a6ff':'#04121f','stroke-width':sel?3:1.5}));
-      g.appendChild(el('text',{x,y:y+7,'text-anchor':'middle','font-size':8,'font-weight':700,
-        fill:'#04121f'},lead.type));
-    }
+    // airborne = a dashed halo around the disc; the jet silhouette already says "aircraft"
+    g.appendChild(el('title',{},st.list.map(a=>`${UNIT_LABEL[a.type]} · ${a.ammo} weapons`).join('\n')));
+    g.appendChild(el('circle',{cx:x,cy:y,r:16,fill:'none',stroke:lead.color,'stroke-width':1.4,
+      'stroke-dasharray':'3 2.4','stroke-opacity':0.8,'pointer-events':'none'}));
+    g.appendChild(el('circle',{cx:x,cy:y,r:12,fill:lead.color,
+      stroke:sel?'#58a6ff':'#04121f','stroke-width':sel?3:1.5}));
+    g.appendChild(boardIcon(lead.type,x,y,18,'#04121f'));
+    // a stack shows how many squadrons share the hex; a lone one shows its weapons
+    tokenPip(g,x,y,lead.color,n>1?'×'+n:String(lead.ammo));
+    if(sel) tokenLabel(g,x,y+4,n>1?`${n} flights`:UNIT_LABEL[lead.type]);
     svg.appendChild(g);
   }
   // ---- threat tracks: this turn's flight path, fading with age (detected contacts only) ----
@@ -2804,7 +2878,7 @@ function airPanel(){
   let h=`<p class="stitle">On station</p>`;
   if(!up.length) h+=`<div class="hint">No squadrons airborne.</div>`;
   for(const a of up){
-    h+=`<div class="unit"><span class="badge" style="background:${a.color};color:#04121f">${a.type}</span>
+    h+=`<div class="unit">${iconBadge(a.type,a.color,UNIT_LABEL[a.type])}
       <div style="flex:1"><div>${a.name} <span class="k">${a.airborneTurns||0}/${loiterOf(a)} on station</span>${a.cue?' <span class="tag">cue +3</span>':''}</div>
       <div class="k" style="font-size:11px">ammo ${a.ammo}/${a.load} · radar ${a.detect} · @${colLabel(a.col)}${a.row+1}</div></div>
       <span class="step">
@@ -2825,7 +2899,7 @@ function airPanel(){
   h+=`<p class="stitle" style="margin-top:12px">Ships</p>`;
   // destroyers manoeuvre every turn (1 sea hex in combat, 2 in a lull)
   for(const u of G.units.filter(x=>!x.dead&&x.type==='DDG')){
-    h+=`<div class="unit"><span class="badge" style="background:${u.color};color:#04121f">DDG</span>
+    h+=`<div class="unit">${iconBadge('DDG',u.color,'Destroyer')}
       <div style="flex:1"><div>${u.name}</div>
       <div class="k" style="font-size:11px">mag ${u.mag}/${UTYPE[u.type].mag} · @${colLabel(u.col)}${u.row+1}${u.moveUsed?` · moved ${u.moveUsed}`:''}</div></div>
       <button data-l="move" data-u="${u.uid}" ${moveRemaining(u)<=0?'disabled':''}>Move ${moveRemaining(u)}</button></div>`;
@@ -2836,7 +2910,7 @@ function airPanel(){
     for(const u of G.units.filter(x=>!x.dead&&x.type!=='DDG')){
       const info = u.sensor ? `detect ${u.detect} @${colLabel(u.col)}${u.row+1}`
                             : `mag ${u.mag}/${UTYPE[u.type].mag} @${colLabel(u.col)}${u.row+1}`;
-      h+=`<div class="unit"><span class="badge" style="background:${u.color};color:#04121f">${u.sensor?'RDR':(u.type==='SHORAD'?'SHR':u.type)}</span>
+      h+=`<div class="unit">${iconBadge(iconKey(u),u.color,UNIT_LABEL[iconKey(u)])}
         <div style="flex:1">${u.name} <span class="k">${info}${u.usedLull?' · acted':''}</span></div>
         <span class="step">
          <button data-l="reload" data-u="${u.uid}" ${u.usedLull||u.sensor?'disabled':''}>Reload</button>
@@ -3001,7 +3075,7 @@ function renderForces(){
       : u.sensor ? `detection ${u.detect} · @${colLabel(u.col)}${u.row+1}`
       : `mag ${u.mag}/${UTYPE[u.type].mag} · r${u.range}${u.detect?' · radar '+u.detect:''} · @${colLabel(u.col)}${u.row+1}`;
     h+=`<div class="${cls}" data-u="${u.uid}">
-      <span class="badge" style="background:${u.color};color:#04121f">${u.sensor?'RDR':(u.type==='SHORAD'?'SHR':u.type)}</span>
+      ${iconBadge(iconKey(u),u.color,UNIT_LABEL[iconKey(u)])}
       <div style="flex:1"><div>${u.name}</div>
       <div class="k" style="font-size:11px">${line}</div></div>
       </div>`;
@@ -3121,13 +3195,13 @@ function helpHTML(){
 
   <h3>Your forces</h3>
   <table class="rules"><tr><th>Unit</th><th>Range</th><th>Shots/turn</th><th>Notes</th></tr>
-    <tr><td>${sw('#8957e5')}ABM battery ×2</td><td>4</td><td>1</td><td>Only unit (with the destroyer) that can kill <b>ballistic</b> missiles</td></tr>
-    <tr><td>${sw('#2f81f7')}SAM battery ×3</td><td>3</td><td>2</td><td>Your anti-cruise workhorse</td></tr>
-    <tr><td>${sw('#3fb950')}SHORAD ×2</td><td>1</td><td>3</td><td>Short range, cheap, deadly up close</td></tr>
-    <tr><td>${sw('#e3b341')}Radar ×2</td><td>detect 10</td><td>—</td><td>Unarmed. The network's eyes — see below</td></tr>
-    <tr><td>${sw('#39c5cf')}Destroyer ×2</td><td>4 · detect 6</td><td>3</td><td>At sea; <b>never reloads</b>. Its own SPY radar makes it a mobile picket</td></tr>
-    <tr><td>${sw('#e6edf3')}5th-gen ×1</td><td>3 · detect 7</td><td>2</td><td>The sensor: move 5, cues <b>+3</b>, 4 turns on station, only 4 weapons</td></tr>
-    <tr><td>${sw('#c9d1d9')}4th-gen ×2</td><td>2 · detect 3</td><td>3</td><td>The shooter: move 4, 6 weapons, 4 sorties, but short-sighted (hits on 10)</td></tr>
+    <tr><td>${iconSw('ABM','#8957e5')} ABM battery ×2</td><td>4</td><td>1</td><td>Only unit (with the destroyer) that can kill <b>ballistic</b> missiles</td></tr>
+    <tr><td>${iconSw('SAM','#2f81f7')} SAM battery ×3</td><td>3</td><td>2</td><td>Your anti-cruise workhorse</td></tr>
+    <tr><td>${iconSw('SHORAD','#3fb950')} SHORAD ×2</td><td>1</td><td>3</td><td>Short range, cheap, deadly up close</td></tr>
+    <tr><td>${iconSw('RADAR','#e3b341')} Radar ×2</td><td>detect 10</td><td>—</td><td>Unarmed. The network's eyes — see below</td></tr>
+    <tr><td>${iconSw('DDG','#39c5cf')} Destroyer ×2</td><td>4 · detect 6</td><td>3</td><td>At sea; <b>never reloads</b>. Its own SPY radar makes it a mobile picket</td></tr>
+    <tr><td>${iconSw('F5','#e6edf3')} 5th-gen ×1</td><td>3 · detect 7</td><td>2</td><td>The sensor: move 5, cues <b>+3</b>, 4 turns on station, only 4 weapons</td></tr>
+    <tr><td>${iconSw('F4','#c9d1d9')} 4th-gen ×2</td><td>2 · detect 3</td><td>3</td><td>The shooter: move 4, 6 weapons, 4 sorties, but short-sighted (hits on 10)</td></tr>
   </table>
   <p><b class="hl">The two fighters are different tools, not two grades of the same jet.</b> The 5th-gen sees furthest,
   reaches furthest and makes every other unit shoot better, but carries almost nothing. The 4th-gen carries and fires
@@ -3197,8 +3271,8 @@ function helpHTML(){
   <p>What beats a jammer is not a better guess, it is <b class="hl">burn-through</b>: get a real sensor close enough and
   the true return overwhelms the jamming, and the track resolves as false. That is a range, and it depends on the sensor:</p>
   <table class="rules"><tr><th>Sensor</th><th>Burn-through</th><th></th></tr>
-    <tr><td>${sw('#e6edf3')}Airborne 5th-gen</td><td><b>${BURN.F5} hexes</b></td><td>Fusion — the best discriminator you own</td></tr>
-    <tr><td>${sw('#e3b341')}Radar (EWR)</td><td><b>${BURN.RADAR} hex</b></td><td>Adjacent only</td></tr>
+    <tr><td>${iconSw('F5','#e6edf3')} Airborne 5th-gen</td><td><b>${BURN.F5} hexes</b></td><td>Fusion — the best discriminator you own</td></tr>
+    <tr><td>${iconSw('RADAR','#e3b341')} Radar (EWR)</td><td><b>${BURN.RADAR} hex</b></td><td>Adjacent only</td></tr>
     <tr><td>Any other unit</td><td><b>same hex</b></td><td>Organic sensor — only if it flies directly overhead</td></tr>
   </table>
   <p>Those ranges are <b class="hl">shorter than the ranges you shoot at</b>, and that is the whole tension: a SAM
@@ -3280,6 +3354,10 @@ function helpHTML(){
 
   <h3>Controls</h3>
   <ul>
+    <li><b>Reading a token:</b> the <b class="hl">colour</b> is the unit family and the <b class="hl">icon</b> is the
+    unit — see the forces table above. The small number on its shoulder is rounds in the magazine (on a flight:
+    weapons, or <b>×n</b> squadrons sharing the hex). A <b>dashed halo</b> means airborne. Select a unit to see its
+    name; hover for its details.</li>
     <li><b>Click a unit</b> (map or list) → see its firing range shaded on the map.</li>
     <li><b>Click a threat</b> → eligible interceptors glow green with lines to it, and a firing solution appears.</li>
     <li>In Engagement, click a threat then a unit (or unit then threat) to assign a shot; click a tag to remove it.</li>
